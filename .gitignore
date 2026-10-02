@@ -1,0 +1,11 @@
+.venv/
+__pycache__/
+*.py[cod]
+data/
+.env
+.env.*
+openai_config.json
+openai_config.*.json
+*.log
+.pytest_cache/
+

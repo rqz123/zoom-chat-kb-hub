@@ -1,0 +1,35 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Zoom Chat Knowledge Hub</title>
+  <link rel="stylesheet" href="/static/styles.css">
+</head>
+<body>
+  <aside>
+    <div class="brand"><span>Z</span><div>Zoom Chat<br><b>Knowledge Hub</b></div></div>
+    <nav>
+      <button data-view="dashboard" class="active">Overview</button>
+      <button data-view="channels">Channels &amp; Readability</button>
+      <button data-view="topics">Conversation Topics</button>
+      <button data-view="knowledge">Knowledge Base</button>
+      <button data-view="mentions">Mentions</button>
+      <button data-view="settings">Settings</button>
+    </nav>
+    <div class="local-note">Local, read-only Zoom access<br>Data stays on this computer</div>
+  </aside>
+  <main>
+    <header><div><h1 id="title">Overview</h1><p id="subtitle">Zoom Chat sync status and local coverage</p></div><button class="primary" id="syncButton">Sync Selected Channels</button></header>
+    <div id="notice" class="notice hidden"></div>
+    <div id="progressStatus" class="progress-status hidden" role="status" aria-live="polite">
+      <div class="progress-copy"><b id="progressTitle"></b><span id="progressElapsed"></span></div>
+      <p id="progressDetail"></p>
+      <div class="progress-track"><div class="progress-bar"></div></div>
+    </div>
+    <section id="content"></section>
+  </main>
+  <script src="/static/app.js"></script>
+</body>
+</html>
+
