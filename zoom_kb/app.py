@@ -4,7 +4,7 @@ import json
 from contextlib import asynccontextmanager
 from typing import Any
 
-from fastapi import FastAPI, HTTPException, Query
+from fastapi import FastAPI, HTTPException, Query, Request
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
@@ -52,6 +52,14 @@ app = FastAPI(title="Zoom Chat Knowledge Hub", version="0.2.0", lifespan=lifespa
 app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
 
 
+@app.middleware("http")
+async def revalidate_local_frontend(request: Request, call_next):
+    response = await call_next(request)
+    if request.url.path == "/" or request.url.path.startswith("/static/"):
+        response.headers["Cache-Control"] = "no-cache"
+    return response
+
+
 class SelectionUpdate(BaseModel):
     selected: bool
 
@@ -95,6 +103,10 @@ class TopicAnalyzeRequest(BaseModel):
 
 class TopicReviewUpdate(BaseModel):
     review_status: str
+
+
+class TopicTranslationRequest(BaseModel):
+    target_language: str
 
 
 class AISettingsUpdate(BaseModel):
@@ -315,6 +327,20 @@ def search_knowledge_for_topic(topic_id: int, limit: int = Query(5, ge=1, le=20)
         raise HTTPException(404, "Topic not found.")
     query = "\n".join(str(topic[key] or "") for key in ("title", "problem_summary", "context_summary"))
     return knowledge_pipeline.search(query, limit=limit, translate=True)
+
+
+@app.post("/api/topics/{topic_id}/translate")
+def translate_topic(topic_id: int, body: TopicTranslationRequest) -> dict[str, Any]:
+    try:
+        return topic_ai_service.translate_topic(topic_id, body.target_language)
+    except ValueError as error:
+        raise HTTPException(400, str(error)) from error
+    except LookupError as error:
+        raise HTTPException(404, str(error)) from error
+    except RuntimeError as error:
+        raise HTTPException(400, str(error)) from error
+    except Exception as error:
+        _raise_safe(error)
 
 
 @app.get("/api/topics/{topic_id}")

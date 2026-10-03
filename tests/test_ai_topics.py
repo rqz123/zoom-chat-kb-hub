@@ -8,7 +8,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from unittest.mock import patch
 
-from zoom_kb.ai_topics import ActionItem, ExtractedTopic, TopicAIService, TopicExtractionResult
+from zoom_kb.ai_topics import ActionItem, ExtractedTopic, TopicAIService, TopicExtractionResult, TopicTranslationResult
 from zoom_kb.db import Database
 
 
@@ -17,6 +17,8 @@ def iso(value: datetime) -> str:
 
 
 class FakeTopicService(TopicAIService):
+    translation_calls = 0
+
     def _extract(self, window, settings):
         ids = [item["zoom_message_id"] for item in window["messages"]]
         return TopicExtractionResult(topics=[ExtractedTopic(
@@ -33,6 +35,20 @@ class FakeTopicService(TopicAIService):
             confidence=0.9,
             source_message_ids=ids,
         )]), {"response_id": "resp_test", "input_tokens": 10, "output_tokens": 5}
+
+    def _translate_topic(self, payload, target_language, settings):
+        self.translation_calls += 1
+        return TopicTranslationResult(
+            title="翻译后的主题",
+            problem_summary="翻译后的问题",
+            context_summary="翻译后的背景",
+            discussion_summary="翻译后的讨论",
+            confirmed_facts=["已确认事实"],
+            conclusions=["结论"],
+            open_questions=["待确认问题"],
+            action_items=[ActionItem(description="验证", owner="", due_date="")],
+            tags=["测试"],
+        )
 
 
 class AITopicTests(unittest.TestCase):
@@ -132,6 +148,23 @@ class AITopicTests(unittest.TestCase):
         self.assertEqual(sources, 3)
         self.assertEqual(run["status"], "succeeded")
         self.assertEqual(run["response_id"], "resp_test")
+
+    def test_topic_translation_is_persistently_cached(self):
+        service = FakeTopicService(self.db)
+        service.translation_calls = 0
+        with patch.dict(os.environ, {"OPENAI_API_KEY": "test-key"}):
+            service.analyze_recent(days=2, max_windows=1)
+            with self.db.connect() as connection:
+                topic_id = connection.execute("SELECT id FROM conversation_topics LIMIT 1").fetchone()["id"]
+            first = service.translate_topic(topic_id, "chinese")
+            second = service.translate_topic(topic_id, "chinese")
+            original = service.translate_topic(topic_id, "english")
+        self.assertFalse(first["cached"])
+        self.assertTrue(second["cached"])
+        self.assertEqual(first["translation"], second["translation"])
+        self.assertEqual(service.translation_calls, 1)
+        self.assertTrue(original["cached"])
+        self.assertEqual(original["translation"]["title"], "Topic z1")
 
 
 if __name__ == "__main__":

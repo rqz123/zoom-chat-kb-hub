@@ -169,6 +169,19 @@ CREATE TABLE IF NOT EXISTS topic_sources (
     message_id INTEGER NOT NULL REFERENCES messages(id) ON DELETE CASCADE,
     PRIMARY KEY(topic_id, message_id)
 );
+
+CREATE TABLE IF NOT EXISTS topic_translations (
+    topic_id INTEGER NOT NULL REFERENCES conversation_topics(id) ON DELETE CASCADE,
+    target_language TEXT NOT NULL,
+    source_hash TEXT NOT NULL,
+    payload_json TEXT NOT NULL,
+    model TEXT NOT NULL,
+    prompt_version TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    PRIMARY KEY(topic_id, target_language, source_hash)
+);
+CREATE INDEX IF NOT EXISTS idx_topic_translations_lookup
+    ON topic_translations(topic_id, target_language, source_hash);
 """
 
 

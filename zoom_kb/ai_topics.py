@@ -22,12 +22,14 @@ from .config import (
     DEFAULT_AI_OUTPUT_LANGUAGE,
     OPENAI_CONFIG_FILE,
     OPENAI_FALLBACK_CONFIG,
+    TOPIC_TRANSLATION_PROMPT_VERSION,
 )
 from .db import Database
 from .sync import now_iso, parse_zoom_time
 
 
 PROMPT_PATH = Path(__file__).resolve().parent / "prompts" / "topic_extraction.md"
+TRANSLATION_PROMPT_PATH = Path(__file__).resolve().parent / "prompts" / "topic_translation.md"
 
 
 class ActionItem(BaseModel):
@@ -53,6 +55,18 @@ class ExtractedTopic(BaseModel):
 
 class TopicExtractionResult(BaseModel):
     topics: list[ExtractedTopic]
+
+
+class TopicTranslationResult(BaseModel):
+    title: str
+    problem_summary: str
+    context_summary: str
+    discussion_summary: str
+    confirmed_facts: list[str]
+    conclusions: list[str]
+    open_questions: list[str]
+    action_items: list[ActionItem]
+    tags: list[str]
 
 
 @dataclass(frozen=True)
@@ -116,6 +130,117 @@ class TopicAIService:
             "output_language": settings.output_language,
             "output_languages": list(AI_OUTPUT_LANGUAGES),
         }
+
+    def translate_topic(self, topic_id: int, target_language: str) -> dict[str, Any]:
+        if target_language not in AI_OUTPUT_LANGUAGES:
+            raise ValueError("Target language must be chinese or english.")
+        with self.db.connect() as connection:
+            row = connection.execute(
+                "SELECT * FROM conversation_topics WHERE id=?", (topic_id,)
+            ).fetchone()
+        if row is None:
+            raise LookupError("Topic not found.")
+
+        payload = self._topic_translation_payload(row)
+        source_language = str(row["source_language"] or "unknown")
+        if target_language == source_language:
+            return {
+                "topic_id": topic_id,
+                "target_language": target_language,
+                "cached": True,
+                "translation": payload,
+            }
+
+        settings = self._resolved_settings()
+        if not settings.configured:
+            raise RuntimeError("OpenAI API key is not configured.")
+        source_hash = self._translation_hash(payload, target_language)
+        with self.db.connect() as connection:
+            cached = connection.execute(
+                """SELECT payload_json FROM topic_translations
+                   WHERE topic_id=? AND target_language=? AND source_hash=?""",
+                (topic_id, target_language, source_hash),
+            ).fetchone()
+        if cached:
+            return {
+                "topic_id": topic_id,
+                "target_language": target_language,
+                "cached": True,
+                "translation": json.loads(cached["payload_json"]),
+            }
+
+        translated = self._translate_topic(payload, target_language, settings)
+        translated_payload = translated.model_dump()
+        with self.db.connect() as connection:
+            connection.execute(
+                """INSERT OR IGNORE INTO topic_translations(
+                     topic_id,target_language,source_hash,payload_json,model,prompt_version,created_at
+                   ) VALUES(?,?,?,?,?,?,?)""",
+                (
+                    topic_id, target_language, source_hash,
+                    json.dumps(translated_payload, ensure_ascii=False), settings.model,
+                    TOPIC_TRANSLATION_PROMPT_VERSION, now_iso(),
+                ),
+            )
+        return {
+            "topic_id": topic_id,
+            "target_language": target_language,
+            "cached": False,
+            "translation": translated_payload,
+        }
+
+    @staticmethod
+    def _topic_translation_payload(row: Any) -> dict[str, Any]:
+        return {
+            "title": str(row["title"] or ""),
+            "problem_summary": str(row["problem_summary"] or ""),
+            "context_summary": str(row["context_summary"] or ""),
+            "discussion_summary": str(row["discussion_summary"] or ""),
+            "confirmed_facts": json.loads(row["confirmed_facts_json"] or "[]"),
+            "conclusions": json.loads(row["conclusions_json"] or "[]"),
+            "open_questions": json.loads(row["open_questions_json"] or "[]"),
+            "action_items": json.loads(row["action_items_json"] or "[]"),
+            "tags": json.loads(row["tags_json"] or "[]"),
+        }
+
+    @staticmethod
+    def _translation_hash(payload: dict[str, Any], target_language: str) -> str:
+        material = {
+            "prompt_version": TOPIC_TRANSLATION_PROMPT_VERSION,
+            "target_language": target_language,
+            "topic": payload,
+        }
+        encoded = json.dumps(material, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode("utf-8")
+        return hashlib.sha256(encoded).hexdigest()
+
+    def _translate_topic(
+        self,
+        payload: dict[str, Any],
+        target_language: str,
+        settings: OpenAISettings,
+    ) -> TopicTranslationResult:
+        from openai import OpenAI
+
+        client_kwargs: dict[str, Any] = {
+            "api_key": settings.api_key,
+            "timeout": 90.0,
+            "max_retries": 2,
+        }
+        if settings.base_url:
+            client_kwargs["base_url"] = settings.base_url
+        client = OpenAI(**client_kwargs)
+        instructions = TRANSLATION_PROMPT_PATH.read_text(encoding="utf-8")
+        request = {"target_language": target_language, "topic": payload}
+        response = client.responses.parse(
+            model=settings.model,
+            instructions=instructions,
+            input=json.dumps(request, ensure_ascii=False),
+            text_format=TopicTranslationResult,
+            store=False,
+        )
+        if response.output_parsed is None:
+            raise RuntimeError("OpenAI returned no translated topic output.")
+        return response.output_parsed
 
     def _resolved_settings(self) -> OpenAISettings:
         settings = load_openai_settings()

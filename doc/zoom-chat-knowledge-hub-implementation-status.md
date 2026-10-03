@@ -35,7 +35,7 @@
 
 ```powershell
 cd C:\Users\qz999\Documents\Codex\2026-09-29\zoo\zoom-chat-knowledge-hub
-.\run.ps1
+.\start.ps1
 ```
 
 浏览器打开：<http://127.0.0.1:8765>

@@ -21,6 +21,9 @@ Local-first, read-only MVP for indexing Zoom Team Chat channels and messages.
 
 Topic extraction sends only selected, readable message windows to the configured
 OpenAI API; encrypted placeholders are excluded and Responses calls use `store=False`.
+The Conversation Topics **Switch Language** action sends only the structured topic
+summary (not original Zoom messages) for Chinese/English translation. Translations
+use `store=False` and are cached both in the browser session and in local SQLite.
 
 ## Setup
 
@@ -31,13 +34,24 @@ python -m venv .venv
 
 The first run imports the existing token from `..\work\.zoom_tokens.json` when present and stores a DPAPI-protected copy under `data\zoom-token.bin`.
 
-## Run
+## Run as a local service
 
 ```powershell
-.\run.ps1
+.\start.ps1
 ```
 
-Open <http://127.0.0.1:8765>.
+The command starts the application in the background and waits for its health check.
+Open <http://127.0.0.1:8765>. Standard output and errors are written under `data`.
+
+Stop the service with:
+
+```powershell
+.\stop.ps1
+```
+
+Running `start.ps1` again is safe: it reports the existing service instead of starting
+a duplicate. `stop.ps1` validates the recorded process start time before stopping it,
+so a stale PID cannot terminate an unrelated process.
 
 The application binds to localhost only. It never sends Zoom chat messages, marks
 messages as read, or downloads attachment contents. Channel selection and mention
