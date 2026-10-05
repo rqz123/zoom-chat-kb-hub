@@ -158,6 +158,7 @@ CREATE TABLE IF NOT EXISTS conversation_topics (
     review_status TEXT NOT NULL DEFAULT 'unreviewed',
     superseded_by_id INTEGER REFERENCES conversation_topics(id) ON DELETE SET NULL,
     ignored_at TEXT,
+    keep_tracking INTEGER NOT NULL DEFAULT 0,
     created_at TEXT NOT NULL,
     updated_at TEXT NOT NULL
 );
@@ -276,6 +277,8 @@ class Database:
             )
         if "ignored_at" not in columns:
             connection.execute("ALTER TABLE conversation_topics ADD COLUMN ignored_at TEXT")
+        if "keep_tracking" not in columns:
+            connection.execute("ALTER TABLE conversation_topics ADD COLUMN keep_tracking INTEGER NOT NULL DEFAULT 0")
         if "archived_at" not in columns:
             connection.execute("ALTER TABLE conversation_topics ADD COLUMN archived_at TEXT")
         if "source_language" not in columns:

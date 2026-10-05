@@ -131,6 +131,33 @@ class AITopicTests(unittest.TestCase):
         self.assertIsNotNone(row["superseded_by_id"])
         self.assertEqual(replacement["ignored_at"], "2026-01-01T00:00:00Z")
 
+    def test_keep_tracking_moves_to_superseding_topic(self):
+        service = FakeTopicService(self.db)
+        with patch.dict(os.environ, {"OPENAI_API_KEY": "test-key"}):
+            service.analyze_recent(days=2, max_windows=1)
+            with self.db.connect() as connection:
+                old = connection.execute(
+                    "SELECT id FROM conversation_topics ORDER BY id LIMIT 1"
+                ).fetchone()["id"]
+                connection.execute(
+                    "UPDATE ai_runs SET input_hash='tracking-old-hash' WHERE id=(SELECT ai_run_id FROM conversation_topics WHERE id=?)",
+                    (old,),
+                )
+                connection.execute(
+                    "UPDATE conversation_topics SET prompt_version='old-version',keep_tracking=1 WHERE id=?",
+                    (old,),
+                )
+            service.analyze_recent(days=2, max_windows=1)
+        with self.db.connect() as connection:
+            row = connection.execute(
+                "SELECT superseded_by_id FROM conversation_topics WHERE id=?", (old,)
+            ).fetchone()
+            replacement = connection.execute(
+                "SELECT keep_tracking FROM conversation_topics WHERE id=?", (row["superseded_by_id"],)
+            ).fetchone()
+        self.assertIsNotNone(row["superseded_by_id"])
+        self.assertEqual(replacement["keep_tracking"], 1)
+
     def test_analysis_is_structured_traceable_and_idempotent(self):
         service = FakeTopicService(self.db)
         with patch.dict(os.environ, {"OPENAI_API_KEY": "test-key", "OPENAI_MODEL": "test-model"}):

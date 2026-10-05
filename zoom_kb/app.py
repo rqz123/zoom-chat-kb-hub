@@ -107,6 +107,10 @@ class TopicReviewUpdate(BaseModel):
     review_status: str
 
 
+class TopicTrackingUpdate(BaseModel):
+    enabled: bool
+
+
 class TopicTranslationRequest(BaseModel):
     target_language: str
 
@@ -298,7 +302,11 @@ def analyze_topics(body: TopicAnalyzeRequest) -> dict[str, Any]:
 
 @app.get("/api/topics")
 def list_topics(search: str = "", status: str = "", limit: int = Query(100, ge=1, le=500)) -> list[dict[str, Any]]:
-    clauses = ["t.superseded_by_id IS NULL", "t.ignored_at IS NULL", "t.archived_at IS NULL", "t.last_message_at>?"]
+    clauses = [
+        "t.superseded_by_id IS NULL",
+        "t.ignored_at IS NULL",
+        "(t.keep_tracking=1 OR (t.archived_at IS NULL AND t.last_message_at>?))",
+    ]
     parameters: list[Any] = [knowledge_pipeline.cutoff()]
     if search:
         clauses.append("(t.title LIKE ? OR t.problem_summary LIKE ? OR t.discussion_summary LIKE ?)")
@@ -384,13 +392,35 @@ def review_topic(topic_id: int, body: TopicReviewUpdate) -> dict[str, Any]:
 @app.post("/api/topics/{topic_id}/ignore")
 def ignore_topic(topic_id: int) -> dict[str, Any]:
     with db.connect() as connection:
-        cursor = connection.execute(
+        topic = connection.execute(
+            "SELECT keep_tracking FROM conversation_topics WHERE id=?", (topic_id,)
+        ).fetchone()
+        if not topic:
+            raise HTTPException(404, "Topic not found.")
+        if topic["keep_tracking"]:
+            raise HTTPException(409, "Turn off Keep Tracking before choosing Do not track.")
+        connection.execute(
             "UPDATE conversation_topics SET ignored_at=?,updated_at=? WHERE id=?",
             (now_iso(), now_iso(), topic_id),
         )
-        if cursor.rowcount == 0:
-            raise HTTPException(404, "Topic not found.")
     return {"id": topic_id, "ignored": True}
+
+
+@app.patch("/api/topics/{topic_id}/tracking")
+def set_topic_tracking(topic_id: int, body: TopicTrackingUpdate) -> dict[str, Any]:
+    with db.connect() as connection:
+        topic = connection.execute(
+            "SELECT ignored_at FROM conversation_topics WHERE id=?", (topic_id,)
+        ).fetchone()
+        if not topic:
+            raise HTTPException(404, "Topic not found.")
+        if topic["ignored_at"] and body.enabled:
+            raise HTTPException(409, "An ignored topic cannot be kept for tracking.")
+        connection.execute(
+            "UPDATE conversation_topics SET keep_tracking=? WHERE id=?",
+            (int(body.enabled), topic_id),
+        )
+    return {"id": topic_id, "keep_tracking": body.enabled}
 
 
 @app.post("/api/topics/{topic_id}/promote")

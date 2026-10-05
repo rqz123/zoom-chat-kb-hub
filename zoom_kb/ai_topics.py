@@ -502,7 +502,7 @@ class TopicAIService:
     def _supersede_contained_topics(connection: Any, topic_id: int, channel_id: str, source_rows: list[dict[str, Any]]) -> None:
         new_sources = {int(item["local_id"]) for item in source_rows}
         candidates = connection.execute(
-            """SELECT id FROM conversation_topics
+            """SELECT id,keep_tracking FROM conversation_topics
                WHERE channel_id=? AND id<>? AND review_status='unreviewed' AND superseded_by_id IS NULL""",
             (channel_id, topic_id),
         ).fetchall()
@@ -524,6 +524,11 @@ class TopicAIService:
                         (ignored, topic_id),
                     )
             if contained:
+                if candidate["keep_tracking"]:
+                    connection.execute(
+                        "UPDATE conversation_topics SET keep_tracking=1,updated_at=? WHERE id=?",
+                        (now_iso(), topic_id),
+                    )
                 connection.execute(
                     """UPDATE knowledge_items SET has_new_activity=1,updated_at=?
                        WHERE id IN (SELECT knowledge_id FROM knowledge_topic_sources WHERE topic_id=?)""",

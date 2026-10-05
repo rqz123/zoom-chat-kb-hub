@@ -99,6 +99,29 @@ class KnowledgePipelineTests(unittest.TestCase):
         self.assertEqual(len(rows), 1)
         self.assertGreater(rows[0]["match_score"], 0.5)
 
+    def test_kept_topic_is_archived_without_losing_tracking(self):
+        topic_service = FakeArchiveAI(self.db)
+        pipeline = FakeKnowledgePipeline(self.db, topic_service)
+        with patch.dict(os.environ, {"OPENAI_API_KEY": "test-key"}):
+            topic_service.analyze_recent(days=30, max_windows=10)
+            with self.db.connect() as connection:
+                mature = connection.execute(
+                    "SELECT id FROM conversation_topics WHERE last_message_at<=? ORDER BY last_message_at LIMIT 1",
+                    (pipeline.cutoff(),),
+                ).fetchone()
+                self.assertIsNotNone(mature)
+                connection.execute(
+                    "UPDATE conversation_topics SET keep_tracking=1 WHERE id=?", (mature["id"],)
+                )
+            result = pipeline.archive_mature_topics(max_topics=10)
+        self.assertGreaterEqual(result["processed"], 1)
+        with self.db.connect() as connection:
+            topic = connection.execute(
+                "SELECT keep_tracking,archived_at FROM conversation_topics WHERE id=?", (mature["id"],)
+            ).fetchone()
+        self.assertEqual(topic["keep_tracking"], 1)
+        self.assertIsNotNone(topic["archived_at"])
+
     def test_legacy_items_are_hidden_from_v02_views(self):
         now = iso(datetime.now(timezone.utc))
         with self.db.connect() as connection:
