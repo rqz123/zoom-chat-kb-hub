@@ -8,7 +8,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from unittest.mock import patch
 
-from zoom_kb.ai_topics import ActionItem, ExtractedTopic, TopicAIService, TopicExtractionResult
+from zoom_kb.ai_topics import ActionItem, ExtractedTopic, TopicAIService, TopicContinuationDecision, TopicExtractionResult
 from zoom_kb.db import Database
 from zoom_kb.knowledge_pipeline import ArchiveDecision, KnowledgePipeline
 
@@ -36,6 +36,11 @@ class FakeArchiveAI(TopicAIService):
             source_message_ids=ids,
         )
         return TopicExtractionResult(topics=[topic]), {}
+
+    def _decide_continuation(self, topic, candidates, settings):
+        return TopicContinuationDecision(
+            same_issue=False, candidate_id=0, confidence=0, reason="No test continuation."
+        )
 
 
 class FakeKnowledgePipeline(KnowledgePipeline):

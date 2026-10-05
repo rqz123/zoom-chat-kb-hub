@@ -8,7 +8,14 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from unittest.mock import patch
 
-from zoom_kb.ai_topics import ActionItem, ExtractedTopic, TopicAIService, TopicExtractionResult, TopicTranslationResult
+from zoom_kb.ai_topics import (
+    ActionItem,
+    ExtractedTopic,
+    TopicAIService,
+    TopicContinuationDecision,
+    TopicExtractionResult,
+    TopicTranslationResult,
+)
 from zoom_kb.db import Database
 
 
@@ -48,6 +55,12 @@ class FakeTopicService(TopicAIService):
             open_questions=["待确认问题"],
             action_items=[ActionItem(description="验证", owner="", due_date="")],
             tags=["测试"],
+        )
+
+
+    def _decide_continuation(self, topic, candidates, settings):
+        return TopicContinuationDecision(
+            same_issue=False, candidate_id=0, confidence=0, reason="No test continuation."
         )
 
 

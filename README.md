@@ -13,6 +13,7 @@ Local-first, read-only MVP for indexing Zoom Team Chat channels and messages.
   traceable conversation topics with problems, conclusions, open questions, and actions.
 - Keep recent conversation topics for a configurable 7/14/30-day maturity period.
 - Mark important topics with **Keep Tracking** so they remain visible after automatic archiving.
+- Consolidate highly overlapping extractions and AI-confirmed follow-up conversations while preserving every source message and an auditable merge history.
 - Automatically archive mature and historical conversations into source-language knowledge.
 - Use multilingual embeddings, temporary query translation, lexical matching, and structured
   identifiers for hybrid knowledge search.

@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import re
 from dataclasses import dataclass, replace
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -22,6 +23,10 @@ from .config import (
     DEFAULT_AI_OUTPUT_LANGUAGE,
     OPENAI_CONFIG_FILE,
     OPENAI_FALLBACK_CONFIG,
+    TOPIC_CONTINUATION_LOOKBACK_DAYS,
+    TOPIC_CONTINUATION_MIN_CONFIDENCE,
+    TOPIC_CONTINUATION_PROMPT_VERSION,
+    TOPIC_SOURCE_OVERLAP_MERGE_THRESHOLD,
     TOPIC_TRANSLATION_PROMPT_VERSION,
 )
 from .db import Database
@@ -30,6 +35,7 @@ from .sync import now_iso, parse_zoom_time
 
 PROMPT_PATH = Path(__file__).resolve().parent / "prompts" / "topic_extraction.md"
 TRANSLATION_PROMPT_PATH = Path(__file__).resolve().parent / "prompts" / "topic_translation.md"
+CONTINUATION_PROMPT_PATH = Path(__file__).resolve().parent / "prompts" / "topic_continuation.md"
 
 
 class ActionItem(BaseModel):
@@ -67,6 +73,13 @@ class TopicTranslationResult(BaseModel):
     open_questions: list[str]
     action_items: list[ActionItem]
     tags: list[str]
+
+
+class TopicContinuationDecision(BaseModel):
+    same_issue: bool
+    candidate_id: int
+    confidence: float = Field(ge=0, le=1)
+    reason: str
 
 
 @dataclass(frozen=True)
@@ -242,6 +255,38 @@ class TopicAIService:
             raise RuntimeError("OpenAI returned no translated topic output.")
         return response.output_parsed
 
+    def _decide_continuation(
+        self,
+        topic: dict[str, Any],
+        candidates: list[dict[str, Any]],
+        settings: OpenAISettings,
+    ) -> TopicContinuationDecision:
+        from openai import OpenAI
+
+        client_kwargs: dict[str, Any] = {
+            "api_key": settings.api_key,
+            "timeout": 90.0,
+            "max_retries": 2,
+        }
+        if settings.base_url:
+            client_kwargs["base_url"] = settings.base_url
+        client = OpenAI(**client_kwargs)
+        payload = {
+            "version": TOPIC_CONTINUATION_PROMPT_VERSION,
+            "new_topic": topic,
+            "candidates": candidates,
+        }
+        response = client.responses.parse(
+            model=settings.model,
+            instructions=CONTINUATION_PROMPT_PATH.read_text(encoding="utf-8"),
+            input=json.dumps(payload, ensure_ascii=False),
+            text_format=TopicContinuationDecision,
+            store=False,
+        )
+        if response.output_parsed is None:
+            raise RuntimeError("OpenAI returned no topic continuation decision.")
+        return response.output_parsed
+
     def _resolved_settings(self) -> OpenAISettings:
         settings = load_openai_settings()
         tier = self.db.get_setting("ai_model_tier") or DEFAULT_AI_MODEL_TIER
@@ -267,7 +312,7 @@ class TopicAIService:
         if not settings.configured:
             raise RuntimeError("OpenAI API key is not configured.")
         windows = self.build_windows(days, channel_ids)
-        processed = skipped = topic_count = 0
+        processed = skipped = topic_count = merged_count = 0
         errors: list[dict[str, str]] = []
         attempted = 0
         for window in windows:
@@ -283,9 +328,18 @@ class TopicAIService:
             run_id = self._start_run(window, input_hash, settings.model)
             try:
                 result, metadata = self._extract(window, window_settings)
-                topic_count += self._store_result(run_id, window, result, settings.model)
+                stored_ids = self._store_result(run_id, window, result, settings.model)
+                topic_count += len(stored_ids)
                 self._finish_run(run_id, "succeeded", metadata=metadata)
                 processed += 1
+                for topic_id in stored_ids:
+                    try:
+                        merged_count += int(self._merge_semantic_continuation(topic_id, settings))
+                    except Exception as merge_error:
+                        errors.append({
+                            "channel": window["channel_name"],
+                            "error": f"Topic continuation check failed: {str(merge_error)[:220]}",
+                        })
             except Exception as error:
                 self._finish_run(run_id, "failed", error=str(error)[:1000])
                 errors.append({"channel": window["channel_name"], "error": str(error)[:300]})
@@ -294,6 +348,7 @@ class TopicAIService:
             "processed": processed,
             "skipped": skipped,
             "topics": topic_count,
+            "merged_topics": merged_count,
             "errors": errors,
         }
 
@@ -459,9 +514,9 @@ class TopicAIService:
         window: dict[str, Any],
         result: TopicExtractionResult,
         model: str,
-    ) -> int:
+    ) -> list[int]:
         message_map = {item["zoom_message_id"]: item for item in window["messages"]}
-        stored = 0
+        stored_ids: list[int] = []
         stamp = now_iso()
         with self.db.connect() as connection:
             for topic in result.topics:
@@ -494,18 +549,90 @@ class TopicAIService:
                     "INSERT INTO topic_sources(topic_id,message_id) VALUES(?,?)",
                     [(topic_id, item["local_id"]) for item in source_rows],
                 )
-                self._supersede_contained_topics(connection, int(topic_id), window["channel_id"], source_rows)
-                stored += 1
-        return stored
+                self._merge_source_overlaps(connection, int(topic_id), window["channel_id"])
+                stored_ids.append(int(topic_id))
+        return stored_ids
 
     @staticmethod
-    def _supersede_contained_topics(connection: Any, topic_id: int, channel_id: str, source_rows: list[dict[str, Any]]) -> None:
-        new_sources = {int(item["local_id"]) for item in source_rows}
+    def _merge_topics(
+        connection: Any,
+        source_topic_id: int,
+        target_topic_id: int,
+        method: str,
+        confidence: float,
+        reason: str,
+    ) -> None:
+        source = connection.execute(
+            "SELECT keep_tracking,ignored_at FROM conversation_topics WHERE id=?",
+            (source_topic_id,),
+        ).fetchone()
+        target = connection.execute(
+            "SELECT keep_tracking,ignored_at FROM conversation_topics WHERE id=?",
+            (target_topic_id,),
+        ).fetchone()
+        if not source or not target:
+            return
+        connection.execute(
+            """INSERT OR IGNORE INTO topic_sources(topic_id,message_id)
+               SELECT ?,message_id FROM topic_sources WHERE topic_id=?""",
+            (target_topic_id, source_topic_id),
+        )
+        source_stats = connection.execute(
+            """SELECT MIN(m.sent_at) first_at,MAX(m.sent_at) last_at,COUNT(*) source_count
+               FROM topic_sources ts JOIN messages m ON m.id=ts.message_id WHERE ts.topic_id=?""",
+            (target_topic_id,),
+        ).fetchone()
+        merged_ignored = target["ignored_at"] or source["ignored_at"]
+        merged_keep = int(bool(target["keep_tracking"] or source["keep_tracking"]) and not merged_ignored)
+        stamp = now_iso()
+        connection.execute(
+            """UPDATE conversation_topics
+               SET keep_tracking=?,ignored_at=?,first_message_at=?,last_message_at=?,
+                   source_message_count=?,updated_at=? WHERE id=?""",
+            (
+                merged_keep, merged_ignored, source_stats["first_at"], source_stats["last_at"],
+                source_stats["source_count"], stamp, target_topic_id,
+            ),
+        )
+        connection.execute(
+            """INSERT OR IGNORE INTO knowledge_topic_sources(knowledge_id,topic_id)
+               SELECT knowledge_id,? FROM knowledge_topic_sources WHERE topic_id=?""",
+            (target_topic_id, source_topic_id),
+        )
+        connection.execute(
+            """UPDATE knowledge_items SET has_new_activity=1,updated_at=?
+               WHERE id IN (SELECT knowledge_id FROM knowledge_topic_sources WHERE topic_id=?)""",
+            (stamp, source_topic_id),
+        )
+        connection.execute(
+            "UPDATE conversation_topics SET superseded_by_id=?,updated_at=? WHERE id=?",
+            (target_topic_id, stamp, source_topic_id),
+        )
+        connection.execute(
+            """INSERT OR IGNORE INTO topic_merge_events(
+                 source_topic_id,target_topic_id,method,confidence,reason,created_at
+               ) VALUES(?,?,?,?,?,?)""",
+            (source_topic_id, target_topic_id, method, confidence, reason[:500], stamp),
+        )
+
+    @classmethod
+    def _merge_source_overlaps(cls, connection: Any, topic_id: int, channel_id: str) -> int:
+        target_row = connection.execute(
+            "SELECT * FROM conversation_topics WHERE id=? AND superseded_by_id IS NULL", (topic_id,)
+        ).fetchone()
+        if not target_row:
+            return 0
+        target_features = cls._topic_features(dict(target_row))
+        new_sources = {
+            int(row["message_id"])
+            for row in connection.execute("SELECT message_id FROM topic_sources WHERE topic_id=?", (topic_id,))
+        }
         candidates = connection.execute(
-            """SELECT id,keep_tracking FROM conversation_topics
-               WHERE channel_id=? AND id<>? AND review_status='unreviewed' AND superseded_by_id IS NULL""",
+            """SELECT * FROM conversation_topics
+               WHERE channel_id=? AND id<? AND review_status='unreviewed' AND superseded_by_id IS NULL""",
             (channel_id, topic_id),
         ).fetchall()
+        merged = 0
         for candidate in candidates:
             old_sources = {
                 int(row["message_id"])
@@ -514,30 +641,155 @@ class TopicAIService:
             overlap = len(old_sources & new_sources)
             similarity = overlap / len(old_sources | new_sources) if old_sources else 0
             contained = bool(old_sources) and old_sources.issubset(new_sources)
-            if contained or similarity >= 0.5:
-                ignored = connection.execute(
-                    "SELECT ignored_at FROM conversation_topics WHERE id=?", (candidate["id"],)
-                ).fetchone()["ignored_at"]
-                if ignored:
-                    connection.execute(
-                        "UPDATE conversation_topics SET ignored_at=? WHERE id=?",
-                        (ignored, topic_id),
-                    )
-            if contained:
-                if candidate["keep_tracking"]:
-                    connection.execute(
-                        "UPDATE conversation_topics SET keep_tracking=1,updated_at=? WHERE id=?",
-                        (now_iso(), topic_id),
-                    )
+            candidate_features = cls._topic_features(dict(candidate))
+            shared_features = target_features & candidate_features
+            topic_similarity = (
+                len(shared_features) / min(len(target_features), len(candidate_features))
+                if target_features and candidate_features else 0
+            )
+            if candidate["ignored_at"] and similarity >= 0.5:
                 connection.execute(
-                    """UPDATE knowledge_items SET has_new_activity=1,updated_at=?
-                       WHERE id IN (SELECT knowledge_id FROM knowledge_topic_sources WHERE topic_id=?)""",
-                    (now_iso(), candidate["id"]),
+                    "UPDATE conversation_topics SET ignored_at=?,keep_tracking=0 WHERE id=?",
+                    (candidate["ignored_at"], topic_id),
                 )
-                connection.execute(
-                    "UPDATE conversation_topics SET superseded_by_id=?,updated_at=? WHERE id=?",
-                    (topic_id, now_iso(), candidate["id"]),
+            should_merge = similarity >= 0.95 or (
+                (contained or similarity >= TOPIC_SOURCE_OVERLAP_MERGE_THRESHOLD)
+                and len(shared_features) >= 2
+                and topic_similarity >= 0.12
+            )
+            if should_merge:
+                cls._merge_topics(
+                    connection,
+                    int(candidate["id"]),
+                    topic_id,
+                    "source_overlap",
+                    1.0 if contained else similarity,
+                    (
+                        "Source message set was contained."
+                        if contained
+                        else f"Source-message Jaccard overlap was {similarity:.3f}; topic-feature similarity was {topic_similarity:.3f}."
+                    ),
                 )
+                new_sources |= old_sources
+                target_features |= candidate_features
+                merged += 1
+        return merged
+
+    @staticmethod
+    def _topic_features(topic: dict[str, Any]) -> set[str]:
+        text = " ".join(str(topic.get(key) or "") for key in (
+            "title", "problem_summary", "context_summary", "discussion_summary", "tags_json",
+        )).casefold()
+        ascii_tokens = {
+            token for token in re.findall(r"[a-z0-9][a-z0-9+._-]+", text)
+            if len(token) >= 2 and token not in {"the", "and", "for", "with", "from", "this", "that", "issue", "problem"}
+        }
+        chinese_tokens: set[str] = set()
+        for chunk in re.findall(r"[\u4e00-\u9fff]+", text):
+            chinese_tokens.update(chunk[index:index + 2] for index in range(max(0, len(chunk) - 1)))
+        return ascii_tokens | chinese_tokens
+
+    def _continuation_candidates(self, topic_id: int, limit: int = 5) -> tuple[dict[str, Any] | None, list[dict[str, Any]]]:
+        with self.db.connect() as connection:
+            row = connection.execute("SELECT * FROM conversation_topics WHERE id=?", (topic_id,)).fetchone()
+            if not row:
+                return None, []
+            topic = dict(row)
+            if topic["ignored_at"] or topic["superseded_by_id"]:
+                return topic, []
+            rows = [dict(item) for item in connection.execute(
+                """SELECT * FROM conversation_topics
+                   WHERE channel_id=? AND id<? AND superseded_by_id IS NULL AND ignored_at IS NULL
+                   ORDER BY last_message_at DESC LIMIT 100""",
+                (topic["channel_id"], topic_id),
+            )]
+        topic_features = self._topic_features(topic)
+        topic_first = parse_zoom_time(topic["first_message_at"])
+        ranked: list[tuple[float, dict[str, Any]]] = []
+        for candidate in rows:
+            candidate_last = parse_zoom_time(candidate["last_message_at"])
+            if not topic_first or not candidate_last:
+                continue
+            gap = topic_first - candidate_last
+            if gap < -timedelta(days=1) or gap > timedelta(days=TOPIC_CONTINUATION_LOOKBACK_DAYS):
+                continue
+            candidate_features = self._topic_features(candidate)
+            shared = topic_features & candidate_features
+            score = len(shared) / min(len(topic_features), len(candidate_features)) if topic_features and candidate_features else 0
+            if len(shared) < 2 or score < 0.12:
+                continue
+            candidate["candidate_score"] = round(score, 4)
+            ranked.append((score, candidate))
+        ranked.sort(key=lambda item: (-item[0], item[1]["id"]))
+        return topic, [item[1] for item in ranked[:limit]]
+
+    @staticmethod
+    def _continuation_payload(topic: dict[str, Any]) -> dict[str, Any]:
+        return {
+            "candidate_id": int(topic["id"]),
+            "title": topic["title"],
+            "problem_summary": topic["problem_summary"],
+            "context_summary": topic["context_summary"],
+            "discussion_summary": topic["discussion_summary"],
+            "tags": json.loads(topic.get("tags_json") or "[]"),
+            "first_message_at": topic["first_message_at"],
+            "last_message_at": topic["last_message_at"],
+            "candidate_score": topic.get("candidate_score"),
+        }
+
+    def _merge_semantic_continuation(self, topic_id: int, settings: OpenAISettings) -> bool:
+        topic, candidates = self._continuation_candidates(topic_id)
+        if not topic or not candidates:
+            return False
+        decision = self._decide_continuation(
+            self._continuation_payload(topic),
+            [self._continuation_payload(candidate) for candidate in candidates],
+            settings,
+        )
+        candidate_ids = {int(candidate["id"]) for candidate in candidates}
+        if (
+            not decision.same_issue
+            or decision.candidate_id not in candidate_ids
+            or decision.confidence < TOPIC_CONTINUATION_MIN_CONFIDENCE
+        ):
+            return False
+        with self.db.connect() as connection:
+            candidate = connection.execute(
+                "SELECT superseded_by_id,ignored_at FROM conversation_topics WHERE id=?",
+                (decision.candidate_id,),
+            ).fetchone()
+            target = connection.execute(
+                "SELECT superseded_by_id FROM conversation_topics WHERE id=?", (topic_id,)
+            ).fetchone()
+            if not candidate or candidate["superseded_by_id"] or candidate["ignored_at"] or not target or target["superseded_by_id"]:
+                return False
+            self._merge_topics(
+                connection,
+                decision.candidate_id,
+                topic_id,
+                "semantic_continuation",
+                decision.confidence,
+                decision.reason,
+            )
+        return True
+
+    def consolidate_topic(self, topic_id: int) -> dict[str, int]:
+        settings = self._resolved_settings()
+        if not settings.configured:
+            raise RuntimeError("OpenAI API key is not configured.")
+        _, initial_candidates = self._continuation_candidates(topic_id, limit=20)
+        candidate_ids = sorted((int(item["id"]) for item in initial_candidates), reverse=True)
+        with self.db.connect() as connection:
+            row = connection.execute("SELECT channel_id FROM conversation_topics WHERE id=?", (topic_id,)).fetchone()
+            if not row:
+                raise LookupError("Topic not found.")
+            channel_id = row["channel_id"]
+            overlap_merges = sum(
+                self._merge_source_overlaps(connection, candidate_id, channel_id)
+                for candidate_id in candidate_ids
+            )
+        semantic_merges = int(self._merge_semantic_continuation(topic_id, settings))
+        return {"source_overlap": overlap_merges, "semantic_continuation": semantic_merges}
 
     def _window_hash(self, window: dict[str, Any], output_language: str | None = None) -> str:
         settings = self._resolved_settings()

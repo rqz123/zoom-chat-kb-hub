@@ -183,6 +183,19 @@ CREATE TABLE IF NOT EXISTS topic_translations (
 );
 CREATE INDEX IF NOT EXISTS idx_topic_translations_lookup
     ON topic_translations(topic_id, target_language, source_hash);
+
+CREATE TABLE IF NOT EXISTS topic_merge_events (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    source_topic_id INTEGER NOT NULL REFERENCES conversation_topics(id) ON DELETE CASCADE,
+    target_topic_id INTEGER NOT NULL REFERENCES conversation_topics(id) ON DELETE CASCADE,
+    method TEXT NOT NULL,
+    confidence REAL NOT NULL,
+    reason TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    UNIQUE(source_topic_id, target_topic_id)
+);
+CREATE INDEX IF NOT EXISTS idx_topic_merge_target
+    ON topic_merge_events(target_topic_id, created_at DESC);
 """
 
 
@@ -283,6 +296,22 @@ class Database:
             connection.execute("ALTER TABLE conversation_topics ADD COLUMN archived_at TEXT")
         if "source_language" not in columns:
             connection.execute("ALTER TABLE conversation_topics ADD COLUMN source_language TEXT NOT NULL DEFAULT 'unknown'")
+        connection.executescript(
+            """
+            CREATE TABLE IF NOT EXISTS topic_merge_events (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                source_topic_id INTEGER NOT NULL REFERENCES conversation_topics(id) ON DELETE CASCADE,
+                target_topic_id INTEGER NOT NULL REFERENCES conversation_topics(id) ON DELETE CASCADE,
+                method TEXT NOT NULL,
+                confidence REAL NOT NULL,
+                reason TEXT NOT NULL,
+                created_at TEXT NOT NULL,
+                UNIQUE(source_topic_id, target_topic_id)
+            );
+            CREATE INDEX IF NOT EXISTS idx_topic_merge_target
+                ON topic_merge_events(target_topic_id, created_at DESC);
+            """
+        )
 
     @staticmethod
     def _migrate_knowledge_pipeline(connection: sqlite3.Connection) -> None:
