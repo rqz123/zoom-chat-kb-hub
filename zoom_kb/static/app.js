@@ -141,10 +141,11 @@ async function mentions() {
 }
 
 async function settings() {
-  const [identity, ai, knowledgeSettings] = await Promise.all([api("/api/settings/identity"), api("/api/settings/ai"), api("/api/settings/knowledge")]);
+  const [identity, ai, knowledgeSettings, zoomAuth] = await Promise.all([api("/api/settings/identity"), api("/api/settings/ai"), api("/api/settings/knowledge"), api("/api/auth/zoom")]);
   const languageLabels = {chinese:"Chinese (default)",english:"English"};
   const tierLabels = {low:"GPT-5 mini — economical",mid:"GPT-5.6 Luna — fast (default)",high:"GPT-5.6 Terra — highest quality"};
-  content.innerHTML = `<div class="panel"><h2>AI model</h2><p class="muted">The API key remains in the external configuration file and is never shown here. Knowledge is always stored in the original conversation language; this language preference is used for query/display behavior.</p>
+  content.innerHTML = `<div class="panel"><h2>Zoom authorization</h2><p>${zoomAuth.token_present ? "Authorization token saved. Refresh channels to verify access." : "Zoom authorization is required."}</p><p class="muted">Registered callback must match: ${esc(zoomAuth.redirect_uri)}</p><a class="primary" href="${esc(zoomAuth.start_url)}">${zoomAuth.token_present ? "Reconnect Zoom" : "Authorize Zoom"}</a></div>
+    <div class="panel"><h2>AI model</h2><p class="muted">The API key remains in the external configuration file and is never shown here. Knowledge is always stored in the original conversation language; this language preference is used for query/display behavior.</p>
     <div class="field"><label>Model tier</label><select id="modelTier">${Object.entries(ai.model_tiers).map(([tier,model])=>`<option value="${tier}" ${tier===ai.model_tier?"selected":""}>${esc(tierLabels[tier]||tier)} · ${esc(model)}</option>`).join("")}</select></div>
     <div class="field"><label>Preferred query language</label><select id="outputLanguage">${ai.output_languages.map(language=>`<option value="${language}" ${language===ai.output_language?"selected":""}>${esc(languageLabels[language]||language)}</option>`).join("")}</select></div>
     <p class="muted">Credential source: ${esc(ai.config_source)} · API ${ai.configured?"configured":"not configured"}</p><button class="primary" id="saveAI">Save AI Settings</button></div>

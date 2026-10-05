@@ -29,6 +29,7 @@ from .knowledge import KnowledgeService, normalize_question
 from .knowledge_pipeline import KnowledgePipeline
 from .sync import SyncService, now_iso
 from .token_store import TokenStore
+from .oauth import oauth_router
 from .zoom_client import ZoomClient
 
 
@@ -49,6 +50,7 @@ async def lifespan(_: FastAPI):
 
 
 app = FastAPI(title="Zoom Chat Knowledge Hub", version="0.2.0", lifespan=lifespan)
+app.include_router(oauth_router(tokens, ZOOM_CLIENT_ID))
 app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
 
 

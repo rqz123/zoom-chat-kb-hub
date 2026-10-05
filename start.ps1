@@ -51,7 +51,7 @@ if ($null -ne $listener) {
 
 $process = Start-Process `
     -FilePath $pythonPath `
-    -ArgumentList @("-m", "uvicorn", "zoom_kb.app:app", "--host", "127.0.0.1", "--port", "8765") `
+    -ArgumentList @("-m", "uvicorn", "zoom_kb.app:app", "--host", "127.0.0.1", "--port", "8765", "--no-access-log") `
     -WorkingDirectory $projectDir `
     -WindowStyle Hidden `
     -RedirectStandardOutput $stdoutPath `

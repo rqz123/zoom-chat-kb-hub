@@ -34,6 +34,16 @@ python -m venv .venv
 
 The first run imports the existing token from `..\work\.zoom_tokens.json` when present and stores a DPAPI-protected copy under `data\zoom-token.bin`.
 
+If no token is available, open **Settings > Authorize Zoom**. The app uses public-client
+OAuth with PKCE; no client secret is needed. The Zoom Marketplace app must have its public
+client enabled and the exact callback `http://127.0.0.1:8765/oauth/zoom/callback` registered.
+Set `ZOOM_PUBLIC_CLIENT_ID` before starting if using a different Marketplace app.
+Zoom's current loopback guidance requires the numeric `127.0.0.1` address rather than
+`localhost`. Authorization must finish in the same browser within ten minutes.
+The server must remain running during authorization. Tokens are saved using Windows DPAPI;
+access logging is disabled by the launch scripts so callback codes are not logged.
+After authorization, refresh channels to verify the token has the required Team Chat access.
+
 ## Run as a local service
 
 ```powershell
