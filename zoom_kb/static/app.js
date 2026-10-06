@@ -55,6 +55,22 @@ async function render(view = state.view) {
   catch (error) { content.innerHTML = `<div class="panel empty">${esc(error.message)}</div>`; show(error.message, true); }
 }
 
+function latestSyncPanel(run) {
+  if(!run)return `<div class="panel"><h2>Latest sync</h2><p class="muted">Not run yet</p></div>`;
+  const channelResults=run.channel_results||[];
+  const updated=run.updated_channels||channelResults.filter(item=>(item.message_count||0)>0);
+  const archive=run.knowledge_archive||{};
+  const hasChannelDetail=channelResults.length>0||run.channel_count===0;
+  const hasArchiveDetail=Object.keys(archive).length>0;
+  const archived=archive.archived_topics||0;
+  const updateRows=updated.map(item=>`<tr><td><b>${esc(item.channel_name||item.channel_id)}</b></td><td>${item.message_count} message${item.message_count===1?"":"s"}</td></tr>`).join("");
+  const errorRows=(run.channel_errors||[]).map(item=>`<p class="sync-error"><b>${esc(item.channel||"Channel")}</b>: ${esc(item.error||"Sync failed")}</p>`).join("");
+  return `<div class="panel"><div class="panel-head"><div><h2>Latest sync</h2><p class="muted">${esc(run.status)} · ${esc(fmtDate(run.finished_at||run.started_at))}</p></div></div>
+    <div class="sync-summary"><div><span>Selected channels checked</span><b>${run.channel_count}</b></div><div><span>Channels with updates</span><b>${updated.length}</b></div><div><span>New or changed messages</span><b>${run.message_count}</b></div><div><span>Mature topics archived</span><b>${hasArchiveDetail?archived:"—"}</b></div></div>
+    <h3>Channel updates</h3>${hasChannelDetail?(updateRows?`<table><thead><tr><th>Channel</th><th>Messages added or changed</th></tr></thead><tbody>${updateRows}</tbody></table>`:`<p class="muted">No selected channel had new or changed messages.</p>`):`<p class="muted">Per-channel counts will be available after the next sync.</p>`}
+    <div class="archive-result"><b>Knowledge maturity:</b> ${hasArchiveDetail?`${archived} topic${archived===1?"":"s"} passed the age limit and entered the Knowledge Base. ${archive.created||0} created, ${archive.updated||0} updated, ${archive.related||0} related, ${archive.conflicts||0} conflicts.`:"Details will be available after the next sync."}</div>${errorRows}</div>`;
+}
+
 async function dashboard() {
   const data = await api("/api/dashboard");
   const channels = data.channels || {};
@@ -65,7 +81,7 @@ async function dashboard() {
     <div class="card"><div class="label">Open mentions</div><div class="value">${data.open_mentions}</div></div>
   </div><div class="panel"><div class="panel-head"><h2>Readability distribution</h2></div><table><tbody>
     ${Object.entries(channels).map(([key,value])=>`<tr><td>${badge(key)}</td><td>${value} channels</td></tr>`).join("") || "<tr><td class='empty'>No channels scanned yet</td></tr>"}
-  </tbody></table></div><div class="panel"><h2>Latest sync</h2><p class="muted">${data.last_run ? `${esc(data.last_run.status)} · ${data.last_run.message_count} messages · ${esc(fmtDate(data.last_run.finished_at || data.last_run.started_at))}` : "Not run yet"}</p></div>`;
+  </tbody></table></div>${latestSyncPanel(data.last_run)}`;
 }
 
 async function channels() {
@@ -175,5 +191,5 @@ cancelInternalNote.onclick=closeInternalNote;
 internalNoteDialog.addEventListener("cancel",()=>{internalNoteTopicId=null;internalNoteText.value="";internalNoteError.textContent="";internalNoteError.classList.add("hidden");});
 saveInternalNote.onclick=async()=>{const note=internalNoteText.value.trim();if(!note){internalNoteError.textContent="Enter an internal note before saving.";internalNoteError.classList.remove("hidden");internalNoteText.focus();return;}const topicId=internalNoteTopicId;saveInternalNote.disabled=true;cancelInternalNote.disabled=true;saveInternalNote.textContent="Summarizing…";internalNoteError.classList.add("hidden");try{await api(`/api/topics/${topicId}/internal-notes`,{method:"POST",body:JSON.stringify({note})});closeInternalNote();show("Internal note saved and merged into the non-Zoom summary.");await topics();}catch(error){internalNoteError.textContent=error.message;internalNoteError.classList.remove("hidden");}finally{saveInternalNote.textContent="Summarize & Save";saveInternalNote.disabled=false;cancelInternalNote.disabled=false;}};
 document.querySelectorAll("nav button").forEach(button=>button.onclick=()=>render(button.dataset.view));
-syncButton.onclick=event=>work(event.target,async()=>{const result=await api("/api/sync-runs",{method:"POST"});const extraction=result.topic_extraction||{};const archive=result.knowledge_archive||{};show(`Sync complete: ${result.channels} channels, ${result.messages} messages inserted or updated${result.errors.length?`, ${result.errors.length} errors`:""}. Recent topics: ${extraction.topics||0} created. Mature knowledge: ${archive.created||0} created, ${archive.updated||0} updated, ${archive.related||0} related, ${archive.conflicts||0} conflicts.`);await render();},{label:"Syncing…",title:"Syncing channels, extracting topics, and archiving knowledge",detail:"Fetching new Zoom Chat messages, extracting recent conversation topics, and moving eligible completed discussions into the Knowledge Base."});
+syncButton.onclick=event=>work(event.target,async()=>{const result=await api("/api/sync-runs",{method:"POST"});const extraction=result.topic_extraction||{};const archive=result.knowledge_archive||{};show(`Sync complete: ${result.channels} channels checked, ${result.messages} new or changed messages${result.errors.length?`, ${result.errors.length} errors`:""}. Recent topics: ${extraction.topics||0} created. Mature topics archived: ${archive.archived_topics||0}.`);await render();},{label:"Syncing…",title:"Syncing channels, extracting topics, and archiving knowledge",detail:"Fetching new Zoom Chat messages, extracting recent conversation topics, and moving eligible completed discussions into the Knowledge Base."});
 render();

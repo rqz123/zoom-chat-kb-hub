@@ -82,19 +82,19 @@ class KnowledgePipeline:
 
     def archive_mature_topics(self,max_topics:int=8)->dict[str,Any]:
         settings=self.topic_service._resolved_settings()
-        if not settings.configured:return {'processed':0,'created':0,'updated':0,'related':0,'conflicts':0,'errors':['OpenAI is not configured']}
+        if not settings.configured:return {'processed':0,'archived_topics':0,'created':0,'updated':0,'related':0,'conflicts':0,'errors':['OpenAI is not configured']}
         with self.db.connect() as c: ids=[r['id'] for r in c.execute("SELECT id FROM conversation_topics WHERE superseded_by_id IS NULL AND ignored_at IS NULL AND archived_at IS NULL AND last_message_at<=? ORDER BY last_message_at LIMIT ?",(self.cutoff(),max_topics))]
-        totals={k:0 for k in ('processed','created','updated','related','conflicts')}; errors=[]
+        totals={k:0 for k in ('processed','archived_topics','created','updated','related','conflicts')}; errors=[]
         for tid in ids:
             w=self._topic_window(tid)
             if not w:continue
             lang=detect_source_language(w['messages']); h=self._hash(w,lang,'mature')
-            if self._archive_succeeded(h):self._mark_archived(tid);continue
+            if self._archive_succeeded(h):self._mark_archived(tid);totals['archived_topics']+=1;continue
             ar=self._start_run(w,h,'mature',settings.model)
             try:
                 result,meta=self.topic_service._extract(w,replace(settings,output_language=lang)); stats=self._archive_result(result.topics,w,lang,tid,settings.model,h); totals['processed']+=1
                 for k in stats:totals[k]+=stats[k]
-                self._finish_run(ar,'succeeded',sum(stats.values()),meta);self._mark_archived(tid)
+                self._finish_run(ar,'succeeded',sum(stats.values()),meta);self._mark_archived(tid);totals['archived_topics']+=1
             except Exception as e:self._finish_run(ar,'failed',0,error=str(e)[:1000]);errors.append(str(e)[:300])
         return {**totals,'errors':errors}
 

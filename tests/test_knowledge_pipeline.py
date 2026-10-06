@@ -120,6 +120,7 @@ class KnowledgePipelineTests(unittest.TestCase):
                 )
             result = pipeline.archive_mature_topics(max_topics=10)
         self.assertGreaterEqual(result["processed"], 1)
+        self.assertGreaterEqual(result["archived_topics"], 1)
         with self.db.connect() as connection:
             topic = connection.execute(
                 "SELECT keep_tracking,archived_at FROM conversation_topics WHERE id=?", (mature["id"],)

@@ -117,6 +117,7 @@ class SyncService:
 
         total_messages = 0
         errors: list[dict[str, str]] = []
+        channel_results: list[dict[str, Any]] = []
         for channel in channels:
             end = datetime.now(timezone.utc)
             is_initial = not channel["initial_sync_completed_at"]
@@ -128,6 +129,13 @@ class SyncService:
                 messages = list(self.client.iter_messages(channel["id"], start, end))
                 stored, latest = self._store_channel_messages(channel["id"], messages)
                 total_messages += stored
+                channel_results.append({
+                    "channel_id": channel["id"],
+                    "channel_name": channel["name"],
+                    "message_count": stored,
+                    "fetched_count": len(messages),
+                    "status": "completed",
+                })
                 completed_at = now_iso()
                 start_iso = self._to_iso(start)
                 end_iso = self._to_iso(end)
@@ -152,6 +160,14 @@ class SyncService:
                         )
             except Exception as error:
                 errors.append({"channel": channel["name"], "error": str(error)})
+                channel_results.append({
+                    "channel_id": channel["id"],
+                    "channel_name": channel["name"],
+                    "message_count": 0,
+                    "fetched_count": 0,
+                    "status": "error",
+                    "error": str(error)[:300],
+                })
                 with self.db.connect() as connection:
                     connection.execute(
                         """INSERT INTO sync_cursors(channel_id,last_sync_at,last_error) VALUES(?,?,?)
@@ -161,13 +177,21 @@ class SyncService:
 
         status = "completed" if not errors else "partial"
         finished_at = now_iso()
+        detail = {"channels": channel_results, "errors": errors}
         with self.db.connect() as connection:
             connection.execute(
                 """UPDATE sync_runs SET finished_at=?,status=?,channel_count=?,message_count=?,error_count=?,detail=?
                    WHERE id=?""",
-                (finished_at, status, len(channels), total_messages, len(errors), json.dumps(errors, ensure_ascii=False), run_id),
+                (finished_at, status, len(channels), total_messages, len(errors), json.dumps(detail, ensure_ascii=False), run_id),
             )
-        return {"run_id": run_id, "status": status, "channels": len(channels), "messages": total_messages, "errors": errors}
+        return {
+            "run_id": run_id,
+            "status": status,
+            "channels": len(channels),
+            "messages": total_messages,
+            "channel_results": channel_results,
+            "errors": errors,
+        }
 
     def backfill_channel(self, channel_id: str, days: int) -> dict[str, Any]:
         with self.db.connect() as connection:
@@ -234,7 +258,17 @@ class SyncService:
                 sender_name = sender.get("name") or message.get("sender_display_name") or message.get("sender_name")
                 if not sender_name and isinstance(raw_sender, str):
                     sender_name = raw_sender
-                before = connection.total_changes
+                raw_json = json.dumps(message, ensure_ascii=False)
+                existing = connection.execute(
+                    "SELECT raw_json FROM messages WHERE channel_id=? AND zoom_message_id=?",
+                    (channel_id, message_id),
+                ).fetchone()
+                changed = existing is None
+                if existing is not None:
+                    try:
+                        changed = json.loads(existing["raw_json"]) != message
+                    except (TypeError, ValueError):
+                        changed = True
                 connection.execute(
                     """INSERT INTO messages(channel_id,zoom_message_id,sender_name,sender_member_id,sent_at,body,body_state,thread_id,reply_to_message_id,raw_json)
                        VALUES(?,?,?,?,?,?,?,?,?,?) ON CONFLICT(channel_id,zoom_message_id) DO UPDATE SET
@@ -244,9 +278,9 @@ class SyncService:
                     (channel_id, message_id, sender_name,
                      sender.get("member_id") or message.get("send_member_id") or message.get("sender_member_id"), sent_at, body, state,
                      message.get("thread_id") or message.get("reply_main_message_id"),
-                     message.get("reply_to_message_id") or message.get("reply_main_message_id"), json.dumps(message, ensure_ascii=False)),
+                     message.get("reply_to_message_id") or message.get("reply_main_message_id"), raw_json),
                 )
-                stored += int(connection.total_changes > before)
+                stored += int(changed)
                 local_id = connection.execute(
                     "SELECT id FROM messages WHERE channel_id=? AND zoom_message_id=?", (channel_id, message_id)
                 ).fetchone()["id"]

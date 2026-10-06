@@ -137,6 +137,20 @@ class KnowledgeSearchRequest(BaseModel):
     limit: int = 10
 
 
+def _parse_sync_detail(value: str | None) -> dict[str, Any]:
+    try:
+        parsed = json.loads(value or "{}")
+    except (TypeError, ValueError):
+        parsed = {}
+    if isinstance(parsed, list):
+        return {"channels": [], "errors": parsed}
+    if not isinstance(parsed, dict):
+        return {"channels": [], "errors": []}
+    parsed.setdefault("channels", [])
+    parsed.setdefault("errors", [])
+    return parsed
+
+
 @app.get("/", include_in_schema=False)
 def index() -> FileResponse:
     return FileResponse(STATIC_DIR / "index.html")
@@ -160,12 +174,27 @@ def dashboard() -> dict[str, Any]:
         messages = connection.execute("SELECT COUNT(*) count FROM messages").fetchone()["count"]
         mentions = connection.execute("SELECT COUNT(*) count FROM mention_tasks WHERE status!='done'").fetchone()["count"]
         run = connection.execute("SELECT * FROM sync_runs ORDER BY id DESC LIMIT 1").fetchone()
+    last_run = None
+    if run:
+        last_run = dict(run)
+        detail = _parse_sync_detail(last_run.get("detail"))
+        channel_results = detail.get("channels") if isinstance(detail.get("channels"), list) else []
+        last_run["channel_results"] = channel_results
+        last_run["updated_channels"] = [
+            item for item in channel_results
+            if isinstance(item, dict) and int(item.get("message_count") or 0) > 0
+        ]
+        last_run["channel_errors"] = detail.get("errors") if isinstance(detail.get("errors"), list) else []
+        last_run["knowledge_archive"] = (
+            detail.get("knowledge_archive") if isinstance(detail.get("knowledge_archive"), dict) else {}
+        )
+        last_run.pop("detail", None)
     return {
         "channels": channel_stats,
         "selected_channels": selected,
         "messages": messages,
         "open_mentions": mentions,
-        "last_run": dict(run) if run else None,
+        "last_run": last_run,
     }
 
 
@@ -247,6 +276,16 @@ def run_sync() -> dict[str, Any]:
         except Exception as error:
             result["topic_extraction"] = {"processed": 0, "topics": 0, "errors": [str(error)[:300]]}
         result["knowledge_archive"] = knowledge_pipeline.archive_mature_topics(max_topics=8)
+        with db.connect() as connection:
+            row = connection.execute(
+                "SELECT detail FROM sync_runs WHERE id=?", (result["run_id"],)
+            ).fetchone()
+            detail = _parse_sync_detail(row["detail"] if row else None)
+            detail["knowledge_archive"] = result["knowledge_archive"]
+            connection.execute(
+                "UPDATE sync_runs SET detail=? WHERE id=?",
+                (json.dumps(detail, ensure_ascii=False), result["run_id"]),
+            )
         return result
     except Exception as error:
         _raise_safe(error)
@@ -259,7 +298,7 @@ def list_runs(limit: int = Query(10, ge=1, le=100)) -> list[dict[str, Any]]:
     result = []
     for row in rows:
         item = dict(row)
-        item["detail"] = json.loads(item["detail"] or "[]")
+        item["detail"] = _parse_sync_detail(item["detail"])
         result.append(item)
     return result
 

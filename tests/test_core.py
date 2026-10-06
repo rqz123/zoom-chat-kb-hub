@@ -107,12 +107,21 @@ class CoreTests(unittest.TestCase):
             second = service.sync_selected()
             self.assertEqual(first["status"], "completed")
             self.assertEqual(second["status"], "completed")
+            self.assertEqual(first["messages"], 1)
+            self.assertEqual(first["channel_results"][0]["message_count"], 1)
+            self.assertEqual(second["messages"], 0)
+            self.assertEqual(second["channel_results"][0]["message_count"], 0)
             with db.connect() as connection:
                 count = connection.execute("SELECT COUNT(*) count FROM messages").fetchone()["count"]
                 raw = connection.execute("SELECT raw_json FROM messages").fetchone()["raw_json"]
                 cursor = connection.execute("SELECT * FROM sync_cursors WHERE channel_id='c1'").fetchone()
+                latest_run = connection.execute("SELECT * FROM sync_runs ORDER BY id DESC LIMIT 1").fetchone()
             self.assertEqual(count, 1)
             self.assertEqual(json.loads(raw)["id"], "m1")
+            latest_detail = json.loads(latest_run["detail"])
+            self.assertEqual(latest_run["message_count"], 0)
+            self.assertEqual(latest_detail["channels"][0]["channel_name"], "Readable")
+            self.assertEqual(latest_detail["channels"][0]["message_count"], 0)
             self.assertIsNotNone(cursor["initial_sync_completed_at"])
             self.assertIsNotNone(cursor["covered_from_at"])
             self.assertIsNotNone(cursor["sync_watermark_at"])
