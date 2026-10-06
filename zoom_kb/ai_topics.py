@@ -26,6 +26,7 @@ from .config import (
     TOPIC_CONTINUATION_LOOKBACK_DAYS,
     TOPIC_CONTINUATION_MIN_CONFIDENCE,
     TOPIC_CONTINUATION_PROMPT_VERSION,
+    TOPIC_INTERNAL_NOTE_PROMPT_VERSION,
     TOPIC_SOURCE_OVERLAP_MERGE_THRESHOLD,
     TOPIC_TRANSLATION_PROMPT_VERSION,
 )
@@ -36,6 +37,7 @@ from .sync import now_iso, parse_zoom_time
 PROMPT_PATH = Path(__file__).resolve().parent / "prompts" / "topic_extraction.md"
 TRANSLATION_PROMPT_PATH = Path(__file__).resolve().parent / "prompts" / "topic_translation.md"
 CONTINUATION_PROMPT_PATH = Path(__file__).resolve().parent / "prompts" / "topic_continuation.md"
+INTERNAL_NOTE_PROMPT_PATH = Path(__file__).resolve().parent / "prompts" / "topic_internal_note.md"
 
 
 class ActionItem(BaseModel):
@@ -80,6 +82,10 @@ class TopicContinuationDecision(BaseModel):
     candidate_id: int
     confidence: float = Field(ge=0, le=1)
     reason: str
+
+
+class TopicInternalNoteResult(BaseModel):
+    summary: str
 
 
 @dataclass(frozen=True)
@@ -142,6 +148,80 @@ class TopicAIService:
             "model_tiers": AI_MODEL_TIERS,
             "output_language": settings.output_language,
             "output_languages": list(AI_OUTPUT_LANGUAGES),
+        }
+
+    def add_internal_note(self, topic_id: int, note_text: str) -> dict[str, Any]:
+        note_text = note_text.strip()
+        if not note_text:
+            raise ValueError("Internal note cannot be empty.")
+        if len(note_text) > 12000:
+            raise ValueError("Internal note must be 12,000 characters or fewer.")
+
+        with self.db.connect() as connection:
+            row = connection.execute(
+                "SELECT * FROM conversation_topics WHERE id=?", (topic_id,)
+            ).fetchone()
+            internal_note_history = [
+                str(item["note_text"])
+                for item in connection.execute(
+                    "SELECT note_text FROM topic_internal_notes WHERE topic_id=? ORDER BY created_at,id",
+                    (topic_id,),
+                )
+            ]
+        if row is None:
+            raise LookupError("Topic not found.")
+        if row["superseded_by_id"] is not None:
+            raise ValueError("Add the note to the current merged topic.")
+
+        settings = self._resolved_settings()
+        if not settings.configured:
+            raise RuntimeError("OpenAI API key is not configured.")
+        payload = {
+            "zoom_background_only": {
+                "title": str(row["title"] or ""),
+                "problem_summary": str(row["problem_summary"] or ""),
+                "context_summary": str(row["context_summary"] or ""),
+                "discussion_summary": str(row["discussion_summary"] or ""),
+            },
+            "existing_internal_summary": str(row["internal_context_summary"] or ""),
+            "internal_note_history": internal_note_history,
+            "new_internal_note": note_text,
+        }
+        summarized = self._summarize_internal_note(payload, settings)
+        summary = summarized.summary.strip()
+        if not summary:
+            raise RuntimeError("OpenAI returned an empty internal summary.")
+
+        stamp = now_iso()
+        with self.db.connect() as connection:
+            current = connection.execute(
+                "SELECT superseded_by_id FROM conversation_topics WHERE id=?", (topic_id,)
+            ).fetchone()
+            if current is None:
+                raise LookupError("Topic not found.")
+            if current["superseded_by_id"] is not None:
+                raise ValueError("Add the note to the current merged topic.")
+            connection.execute(
+                """INSERT INTO topic_internal_notes(
+                     topic_id,note_text,ai_summary,ai_model,prompt_version,created_at
+                   ) VALUES(?,?,?,?,?,?)""",
+                (
+                    topic_id, note_text, summary, settings.model,
+                    TOPIC_INTERNAL_NOTE_PROMPT_VERSION, stamp,
+                ),
+            )
+            connection.execute(
+                "UPDATE conversation_topics SET internal_context_summary=?,updated_at=? WHERE id=?",
+                (summary, stamp, topic_id),
+            )
+            count = connection.execute(
+                "SELECT COUNT(*) count FROM topic_internal_notes WHERE topic_id=?", (topic_id,)
+            ).fetchone()["count"]
+        return {
+            "topic_id": topic_id,
+            "internal_context_summary": summary,
+            "internal_note_count": count,
+            "created_at": stamp,
         }
 
     def translate_topic(self, topic_id: int, target_language: str) -> dict[str, Any]:
@@ -253,6 +333,32 @@ class TopicAIService:
         )
         if response.output_parsed is None:
             raise RuntimeError("OpenAI returned no translated topic output.")
+        return response.output_parsed
+
+    def _summarize_internal_note(
+        self,
+        payload: dict[str, Any],
+        settings: OpenAISettings,
+    ) -> TopicInternalNoteResult:
+        from openai import OpenAI
+
+        client_kwargs: dict[str, Any] = {
+            "api_key": settings.api_key,
+            "timeout": 90.0,
+            "max_retries": 2,
+        }
+        if settings.base_url:
+            client_kwargs["base_url"] = settings.base_url
+        client = OpenAI(**client_kwargs)
+        response = client.responses.parse(
+            model=settings.model,
+            instructions=INTERNAL_NOTE_PROMPT_PATH.read_text(encoding="utf-8"),
+            input=json.dumps(payload, ensure_ascii=False),
+            text_format=TopicInternalNoteResult,
+            store=False,
+        )
+        if response.output_parsed is None:
+            raise RuntimeError("OpenAI returned no internal-note summary.")
         return response.output_parsed
 
     def _decide_continuation(
@@ -563,11 +669,11 @@ class TopicAIService:
         reason: str,
     ) -> None:
         source = connection.execute(
-            "SELECT keep_tracking,ignored_at FROM conversation_topics WHERE id=?",
+            "SELECT keep_tracking,ignored_at,internal_context_summary FROM conversation_topics WHERE id=?",
             (source_topic_id,),
         ).fetchone()
         target = connection.execute(
-            "SELECT keep_tracking,ignored_at FROM conversation_topics WHERE id=?",
+            "SELECT keep_tracking,ignored_at,internal_context_summary FROM conversation_topics WHERE id=?",
             (target_topic_id,),
         ).fetchone()
         if not source or not target:
@@ -584,15 +690,25 @@ class TopicAIService:
         ).fetchone()
         merged_ignored = target["ignored_at"] or source["ignored_at"]
         merged_keep = int(bool(target["keep_tracking"] or source["keep_tracking"]) and not merged_ignored)
+        internal_summaries = []
+        for value in (source["internal_context_summary"], target["internal_context_summary"]):
+            cleaned = str(value or "").strip()
+            if cleaned and cleaned not in internal_summaries:
+                internal_summaries.append(cleaned)
+        merged_internal_summary = "\n\n".join(internal_summaries)
         stamp = now_iso()
         connection.execute(
             """UPDATE conversation_topics
                SET keep_tracking=?,ignored_at=?,first_message_at=?,last_message_at=?,
-                   source_message_count=?,updated_at=? WHERE id=?""",
+                   source_message_count=?,internal_context_summary=?,updated_at=? WHERE id=?""",
             (
                 merged_keep, merged_ignored, source_stats["first_at"], source_stats["last_at"],
-                source_stats["source_count"], stamp, target_topic_id,
+                source_stats["source_count"], merged_internal_summary, stamp, target_topic_id,
             ),
+        )
+        connection.execute(
+            "UPDATE topic_internal_notes SET topic_id=? WHERE topic_id=?",
+            (target_topic_id, source_topic_id),
         )
         connection.execute(
             """INSERT OR IGNORE INTO knowledge_topic_sources(knowledge_id,topic_id)

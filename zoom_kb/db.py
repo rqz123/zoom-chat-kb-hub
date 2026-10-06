@@ -159,6 +159,7 @@ CREATE TABLE IF NOT EXISTS conversation_topics (
     superseded_by_id INTEGER REFERENCES conversation_topics(id) ON DELETE SET NULL,
     ignored_at TEXT,
     keep_tracking INTEGER NOT NULL DEFAULT 0,
+    internal_context_summary TEXT NOT NULL DEFAULT '',
     created_at TEXT NOT NULL,
     updated_at TEXT NOT NULL
 );
@@ -183,6 +184,18 @@ CREATE TABLE IF NOT EXISTS topic_translations (
 );
 CREATE INDEX IF NOT EXISTS idx_topic_translations_lookup
     ON topic_translations(topic_id, target_language, source_hash);
+
+CREATE TABLE IF NOT EXISTS topic_internal_notes (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    topic_id INTEGER NOT NULL REFERENCES conversation_topics(id) ON DELETE CASCADE,
+    note_text TEXT NOT NULL,
+    ai_summary TEXT NOT NULL,
+    ai_model TEXT NOT NULL,
+    prompt_version TEXT NOT NULL,
+    created_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_topic_internal_notes_topic
+    ON topic_internal_notes(topic_id, created_at DESC);
 
 CREATE TABLE IF NOT EXISTS topic_merge_events (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -296,8 +309,21 @@ class Database:
             connection.execute("ALTER TABLE conversation_topics ADD COLUMN archived_at TEXT")
         if "source_language" not in columns:
             connection.execute("ALTER TABLE conversation_topics ADD COLUMN source_language TEXT NOT NULL DEFAULT 'unknown'")
+        if "internal_context_summary" not in columns:
+            connection.execute("ALTER TABLE conversation_topics ADD COLUMN internal_context_summary TEXT NOT NULL DEFAULT ''")
         connection.executescript(
             """
+            CREATE TABLE IF NOT EXISTS topic_internal_notes (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                topic_id INTEGER NOT NULL REFERENCES conversation_topics(id) ON DELETE CASCADE,
+                note_text TEXT NOT NULL,
+                ai_summary TEXT NOT NULL,
+                ai_model TEXT NOT NULL,
+                prompt_version TEXT NOT NULL,
+                created_at TEXT NOT NULL
+            );
+            CREATE INDEX IF NOT EXISTS idx_topic_internal_notes_topic
+                ON topic_internal_notes(topic_id, created_at DESC);
             CREATE TABLE IF NOT EXISTS topic_merge_events (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 source_topic_id INTEGER NOT NULL REFERENCES conversation_topics(id) ON DELETE CASCADE,

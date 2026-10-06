@@ -159,6 +159,36 @@ class TopicMergingTests(unittest.TestCase):
         self.assertEqual(event["method"], "semantic_continuation")
         self.assertAlmostEqual(event["confidence"], 0.96)
 
+    def test_merge_moves_internal_notes_and_preserves_both_summaries(self):
+        old_id = self._topic("Earlier topic", "Earlier problem", [0])
+        new_id = self._topic("Current topic", "Current problem", [7])
+        with self.db.connect() as connection:
+            connection.execute(
+                "UPDATE conversation_topics SET internal_context_summary='Earlier private context' WHERE id=?",
+                (old_id,),
+            )
+            connection.execute(
+                "UPDATE conversation_topics SET internal_context_summary='Current private context' WHERE id=?",
+                (new_id,),
+            )
+            connection.execute(
+                """INSERT INTO topic_internal_notes(
+                     topic_id,note_text,ai_summary,ai_model,prompt_version,created_at
+                   ) VALUES(?,?,?,?,?,?)""",
+                (old_id, "Raw private note", "Earlier private context", "test", "test", "2026-10-05T12:00:00Z"),
+            )
+            TopicAIService._merge_topics(connection, old_id, new_id, "test", 1.0, "test merge")
+        with self.db.connect() as connection:
+            target = connection.execute(
+                "SELECT internal_context_summary FROM conversation_topics WHERE id=?", (new_id,)
+            ).fetchone()
+            notes = connection.execute(
+                "SELECT topic_id,note_text FROM topic_internal_notes"
+            ).fetchall()
+        self.assertIn("Earlier private context", target["internal_context_summary"])
+        self.assertIn("Current private context", target["internal_context_summary"])
+        self.assertEqual([(row["topic_id"], row["note_text"]) for row in notes], [(new_id, "Raw private note")])
+
 
 if __name__ == "__main__":
     unittest.main()

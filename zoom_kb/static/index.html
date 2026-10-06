@@ -4,7 +4,7 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>Zoom Chat Knowledge Hub</title>
-  <link rel="stylesheet" href="/static/styles.css?v=0.2.2">
+  <link rel="stylesheet" href="/static/styles.css?v=0.2.3">
 </head>
 <body>
   <aside>
@@ -29,7 +29,21 @@
     </div>
     <section id="content"></section>
   </main>
-  <script src="/static/app.js?v=0.2.2"></script>
+  <dialog id="internalNoteDialog" aria-labelledby="internalNoteTitle">
+    <div class="note-dialog">
+      <h2 id="internalNoteTitle">Add Internal Note</h2>
+      <p id="internalNoteTopic" class="note-dialog-topic"></p>
+      <p class="muted">This note is stored locally and sent to the configured AI to update the internal summary. It will not be added to Zoom Chat or shown as a Zoom message.</p>
+      <label for="internalNoteText">Internal note or additional information</label>
+      <textarea id="internalNoteText" rows="8" maxlength="12000" placeholder="Add private context, a decision, a correction, or a follow-up detail..."></textarea>
+      <p id="internalNoteError" class="dialog-error hidden" role="alert"></p>
+      <div class="dialog-actions">
+        <button class="secondary" id="cancelInternalNote" type="button">Cancel</button>
+        <button class="primary" id="saveInternalNote" type="button">Summarize &amp; Save</button>
+      </div>
+    </div>
+  </dialog>
+  <script src="/static/app.js?v=0.2.3"></script>
 </body>
 </html>
 

@@ -115,6 +115,10 @@ class TopicTranslationRequest(BaseModel):
     target_language: str
 
 
+class TopicInternalNoteRequest(BaseModel):
+    note: str
+
+
 class AISettingsUpdate(BaseModel):
     model_tier: str
     output_language: str
@@ -309,8 +313,8 @@ def list_topics(search: str = "", status: str = "", limit: int = Query(100, ge=1
     ]
     parameters: list[Any] = [knowledge_pipeline.cutoff()]
     if search:
-        clauses.append("(t.title LIKE ? OR t.problem_summary LIKE ? OR t.discussion_summary LIKE ?)")
-        parameters.extend([f"%{search}%"] * 3)
+        clauses.append("(t.title LIKE ? OR t.problem_summary LIKE ? OR t.discussion_summary LIKE ? OR t.internal_context_summary LIKE ?)")
+        parameters.extend([f"%{search}%"] * 4)
     if status:
         clauses.append("t.status=?")
         parameters.append(status)
@@ -318,7 +322,8 @@ def list_topics(search: str = "", status: str = "", limit: int = Query(100, ge=1
     with db.connect() as connection:
         rows = connection.execute(
             f"""SELECT t.*,c.name channel_name,
-                (SELECT kts.knowledge_id FROM knowledge_topic_sources kts WHERE kts.topic_id=t.id LIMIT 1) knowledge_id
+                (SELECT kts.knowledge_id FROM knowledge_topic_sources kts WHERE kts.topic_id=t.id LIMIT 1) knowledge_id,
+                (SELECT COUNT(*) FROM topic_internal_notes tin WHERE tin.topic_id=t.id) internal_note_count
                 FROM conversation_topics t
                 JOIN channels c ON c.id=t.channel_id WHERE {' AND '.join(clauses)}
                 ORDER BY t.last_message_at DESC,t.id DESC LIMIT ?""",
@@ -353,6 +358,20 @@ def translate_topic(topic_id: int, body: TopicTranslationRequest) -> dict[str, A
         _raise_safe(error)
 
 
+@app.post("/api/topics/{topic_id}/internal-notes")
+def add_topic_internal_note(topic_id: int, body: TopicInternalNoteRequest) -> dict[str, Any]:
+    try:
+        return topic_ai_service.add_internal_note(topic_id, body.note)
+    except ValueError as error:
+        raise HTTPException(400, str(error)) from error
+    except LookupError as error:
+        raise HTTPException(404, str(error)) from error
+    except RuntimeError as error:
+        raise HTTPException(400, str(error)) from error
+    except Exception as error:
+        _raise_safe(error)
+
+
 @app.get("/api/topics/{topic_id}")
 def get_topic(topic_id: int) -> dict[str, Any]:
     with db.connect() as connection:
@@ -369,8 +388,15 @@ def get_topic(topic_id: int) -> dict[str, Any]:
                WHERE s.topic_id=? ORDER BY m.sent_at""",
             (topic_id,),
         ).fetchall()
+        internal_notes = connection.execute(
+            """SELECT id,note_text,ai_summary,ai_model,prompt_version,created_at
+               FROM topic_internal_notes WHERE topic_id=? ORDER BY created_at,id""",
+            (topic_id,),
+        ).fetchall()
     result = _topic_row(row)
     result["sources"] = [dict(item) for item in sources]
+    result["internal_notes"] = [dict(item) for item in internal_notes]
+    result["internal_note_count"] = len(internal_notes)
     return result
 
 

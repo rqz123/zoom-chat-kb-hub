@@ -22,6 +22,7 @@ OPENAI_FALLBACK_CONFIG = Path(r"C:\Works\access-redmine\openai_config.json")
 AI_PROMPT_VERSION = "topic-extraction-v3-source-language"
 TOPIC_TRANSLATION_PROMPT_VERSION = "topic-translation-v1"
 TOPIC_CONTINUATION_PROMPT_VERSION = "topic-continuation-v1"
+TOPIC_INTERNAL_NOTE_PROMPT_VERSION = "topic-internal-note-v1"
 KNOWLEDGE_PROMPT_VERSION = "knowledge-archive-v1"
 KNOWLEDGE_DECISION_PROMPT_VERSION = "knowledge-decision-v1"
 EMBEDDING_MODEL = os.getenv("OPENAI_EMBEDDING_MODEL", "text-embedding-3-small")

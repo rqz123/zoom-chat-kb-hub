@@ -72,6 +72,7 @@ class CoreTests(unittest.TestCase):
             self.assertIn("sync_watermark_at", columns)
             self.assertIn("ignored_at", topic_columns)
             self.assertIn("keep_tracking", topic_columns)
+            self.assertIn("internal_context_summary", topic_columns)
 
     def test_empty_first_sync_still_becomes_incremental(self):
         with tempfile.TemporaryDirectory() as folder:
