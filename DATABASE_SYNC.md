@@ -40,5 +40,9 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass -File ".\take-control.ps1" -Sh
 
 - 如果持有控制权的电脑异常关机，先确认该电脑的服务已停止，等待 Google Drive 同步完成，再运行 `take-control.ps1 -Force`。
 - 每次发布的历史版本都保留在 `shared-state\snapshots`。
-- 共享快照替换本地数据库前，旧数据库会移到项目的 `data\sync-local-backups`。
+- 共享快照替换本地数据库前，旧数据库（包括尚未写回主文件的 WAL 内容）会备份到项目的 `data\sync-local-backups`。
+- 快照只在本机生成、校验，Google Drive 上不会打开 SQLite，因此不会出现 `-wal` / `-shm` 文件。
 - 如果出现哈希、文件大小或数据库完整性错误，应等待 Google Drive 完成同步后重试。`-Force` 不会绕过这些检查。
+- 共享目录中还没有快照时，`take.cmd` 会给出警告并继续使用本机数据库。
+- 如果本机取得控制权后，共享目录里出现了更新的代数（通常是 take 时 Google Drive 尚未同步完成），`release.cmd` 会拒绝发布，以免覆盖另一台电脑的数据。确认本机数据应当覆盖时才使用 `-Force`。
+- 已持有控制权的电脑再次运行 `take.cmd` 时会保留本机数据库，只重新启动服务。

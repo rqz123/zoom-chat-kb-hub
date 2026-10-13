@@ -27,6 +27,9 @@ def backup(source: Path, destination: Path) -> None:
     destination_connection = sqlite3.connect(destination)
     try:
         source_connection.backup(destination_connection)
+        # The backup copies the source's WAL flag. A rollback-journal copy is one
+        # self-contained file, so opening it later never creates -wal/-shm files.
+        destination_connection.execute("PRAGMA journal_mode=DELETE")
     finally:
         destination_connection.close()
         source_connection.close()

@@ -25,8 +25,23 @@ if ([Math]::Abs(($actualStart - $recordedStart).TotalSeconds) -gt 2) {
     throw "The recorded PID now belongs to a different process. It was not stopped; stale service state was removed."
 }
 
+# .venv\Scripts\python.exe is a launcher; uvicorn runs in a child interpreter.
+# Windows ends that child only after the launcher dies, so wait for it too
+# before anyone touches the database files.
+$children = @(Get-CimInstance Win32_Process -Filter "ParentProcessId=$($process.Id)" -ErrorAction SilentlyContinue |
+    ForEach-Object { Get-Process -Id $_.ProcessId -ErrorAction SilentlyContinue } |
+    Where-Object { $null -ne $_ -and $_.StartTime -ge $process.StartTime })
+
 Stop-Process -Id $process.Id -Force
 $process.WaitForExit()
+foreach ($child in $children) {
+    if (-not $child.WaitForExit(10000)) {
+        Stop-Process -Id $child.Id -Force -ErrorAction SilentlyContinue
+        if (-not $child.WaitForExit(10000)) {
+            throw "Child process $($child.Id) did not exit."
+        }
+    }
+}
 Remove-Item -LiteralPath $pidPath -Force -ErrorAction SilentlyContinue
 
 Write-Host "Zoom Chat Knowledge Hub stopped (PID $($process.Id))."

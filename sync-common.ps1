@@ -82,6 +82,13 @@ function Stop-ZoomKbService {
     if ($LASTEXITCODE -ne 0) {
         throw "stop.ps1 failed with exit code $LASTEXITCODE."
     }
+    # stop.ps1 only knows the PID it started. Also refuse when an untracked
+    # server, such as one started by hand, still owns the service port.
+    $listener = Get-NetTCPConnection -LocalPort 8765 -State Listen -ErrorAction SilentlyContinue |
+        Select-Object -First 1
+    if ($null -ne $listener) {
+        throw "Port 8765 is still served by PID $($listener.OwningProcess). Stop it before syncing the database."
+    }
 }
 
 function Start-ZoomKbService {
@@ -100,6 +107,25 @@ function Test-ZoomKbDatabase {
     & $Context.Python $Context.Helper verify $Path
     if ($LASTEXITCODE -ne 0) {
         throw "SQLite integrity verification failed: $Path"
+    }
+}
+
+function Backup-ZoomKbDatabase {
+    param(
+        [Parameter(Mandatory = $true)]$Context,
+        [Parameter(Mandatory = $true)][string]$Source,
+        [Parameter(Mandatory = $true)][string]$Destination
+    )
+    & $Context.Python $Context.Helper backup $Source $Destination
+    if ($LASTEXITCODE -ne 0) {
+        throw "SQLite backup failed with exit code $LASTEXITCODE."
+    }
+}
+
+function Remove-ZoomKbDatabaseFiles {
+    param([Parameter(Mandatory = $true)][string]$Path)
+    foreach ($suffix in @("", "-wal", "-shm", "-journal")) {
+        Remove-Item -LiteralPath "$Path$suffix" -Force -ErrorAction SilentlyContinue
     }
 }
 
