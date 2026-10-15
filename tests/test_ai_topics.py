@@ -195,7 +195,8 @@ class AITopicTests(unittest.TestCase):
         with patch.dict(os.environ, {"OPENAI_API_KEY": "test-key"}):
             service.analyze_recent(days=2, max_windows=1)
             with self.db.connect() as connection:
-                topic_id = connection.execute("SELECT id FROM conversation_topics LIMIT 1").fetchone()["id"]
+                topic = connection.execute("SELECT id,title FROM conversation_topics LIMIT 1").fetchone()
+            topic_id = topic["id"]
             first = service.translate_topic(topic_id, "chinese")
             second = service.translate_topic(topic_id, "chinese")
             original = service.translate_topic(topic_id, "english")
@@ -204,7 +205,7 @@ class AITopicTests(unittest.TestCase):
         self.assertEqual(first["translation"], second["translation"])
         self.assertEqual(service.translation_calls, 1)
         self.assertTrue(original["cached"])
-        self.assertEqual(original["translation"]["title"], "Topic z1")
+        self.assertEqual(original["translation"]["title"], topic["title"])
 
 
 if __name__ == "__main__":

@@ -417,7 +417,13 @@ class TopicAIService:
         settings = self._resolved_settings()
         if not settings.configured:
             raise RuntimeError("OpenAI API key is not configured.")
-        windows = self.build_windows(days, channel_ids)
+        # Each sync analyzes only a few windows, so start with the conversations
+        # that changed most recently; otherwise new messages wait behind backlog.
+        windows = sorted(
+            self.build_windows(days, channel_ids),
+            key=lambda window: window["messages"][-1]["sent_at"],
+            reverse=True,
+        )
         processed = skipped = topic_count = merged_count = 0
         errors: list[dict[str, str]] = []
         attempted = 0
