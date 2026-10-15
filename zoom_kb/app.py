@@ -30,7 +30,7 @@ from .knowledge_pipeline import KnowledgePipeline
 from .sync import SyncService, now_iso
 from .token_store import TokenStore
 from .oauth import oauth_router
-from .zoom_client import ZoomClient
+from .zoom_client import ZoomAuthError, ZoomClient
 
 
 db = Database(DB_PATH)
@@ -158,7 +158,8 @@ def index() -> FileResponse:
 
 @app.get("/api/health")
 def health() -> dict[str, Any]:
-    return {"ok": True, "authorized": tokens.exists(), "database": str(DB_PATH)}
+    return {"ok": True, "authorized": tokens.exists() and tokens.auth_error() is None,
+            "auth_error": tokens.auth_error(), "database": str(DB_PATH)}
 
 
 @app.get("/api/dashboard")
@@ -767,6 +768,8 @@ def _require_auth() -> None:
 
 
 def _raise_safe(error: Exception) -> None:
+    if isinstance(error, ZoomAuthError):
+        raise HTTPException(401, str(error)) from error
     message = str(error) or type(error).__name__
     raise HTTPException(502, message[:500]) from error
 

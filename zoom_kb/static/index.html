@@ -4,7 +4,7 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>Zoom Chat Knowledge Hub</title>
-  <link rel="stylesheet" href="/static/styles.css?v=0.2.4">
+  <link rel="stylesheet" href="/static/styles.css?v=0.2.5">
 </head>
 <body>
   <aside>
@@ -21,6 +21,7 @@
   </aside>
   <main>
     <header><div><h1 id="title">Overview</h1><p id="subtitle">Zoom Chat sync status and local coverage</p></div><button class="primary" id="syncButton">Sync Selected Channels</button></header>
+    <div id="authBanner" class="notice error auth-banner hidden" role="alert"></div>
     <div id="notice" class="notice hidden"></div>
     <div id="progressStatus" class="progress-status hidden" role="status" aria-live="polite">
       <div class="progress-copy"><b id="progressTitle"></b><span id="progressElapsed"></span></div>
@@ -43,7 +44,7 @@
       </div>
     </div>
   </dialog>
-  <script src="/static/app.js?v=0.2.4"></script>
+  <script src="/static/app.js?v=0.2.5"></script>
 </body>
 </html>
 

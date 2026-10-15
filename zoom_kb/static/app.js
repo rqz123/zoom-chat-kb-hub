@@ -3,6 +3,7 @@ const content = document.querySelector("#content");
 const notice = document.querySelector("#notice");
 const syncButton = document.querySelector("#syncButton");
 const progressStatus = document.querySelector("#progressStatus");
+const authBanner = document.querySelector("#authBanner");
 const internalNoteDialog = document.querySelector("#internalNoteDialog");
 const internalNoteText = document.querySelector("#internalNoteText");
 const internalNoteError = document.querySelector("#internalNoteError");
@@ -33,6 +34,14 @@ function startProgress(title, detail) {
   progressStatus.classList.remove("hidden");
 }
 function stopProgress() { clearInterval(progressTimer);progressTimer=null;progressStatus.classList.add("hidden"); }
+async function refreshAuthBanner() {
+  let auth;
+  try { auth = await api("/api/auth/zoom"); } catch { return; }
+  const problem = !auth.token_present ? "Zoom is not connected. Syncing needs Zoom authorization."
+    : auth.auth_error ? `Zoom authorization has expired (detected ${fmtDate(auth.auth_error.failed_at)}). Syncing is paused until you reconnect.` : "";
+  authBanner.innerHTML = problem ? `<span>${esc(problem)}</span><a class="primary" href="${esc(auth.start_url)}">Reconnect Zoom</a>` : "";
+  authBanner.classList.toggle("hidden", !problem);
+}
 function badge(status) { return `<span class="badge ${esc(status)}">${esc(status)}</span>`; }
 
 const meta = {
@@ -51,6 +60,7 @@ async function render(view = state.view) {
   document.querySelector("#subtitle").textContent = meta[view][1];
   syncButton.hidden = view === "settings";
   content.innerHTML = "<div class='panel empty'>Loading…</div>";
+  refreshAuthBanner();
   try { await ({dashboard, channels, topics, knowledge, mentions, settings}[view])(); }
   catch (error) { content.innerHTML = `<div class="panel empty">${esc(error.message)}</div>`; show(error.message, true); }
 }
@@ -174,7 +184,7 @@ async function settings() {
   const [identity, ai, knowledgeSettings, zoomAuth] = await Promise.all([api("/api/settings/identity"), api("/api/settings/ai"), api("/api/settings/knowledge"), api("/api/auth/zoom")]);
   const languageLabels = {chinese:"Chinese (default)",english:"English"};
   const tierLabels = {low:"GPT-5 mini — economical",mid:"GPT-5.6 Luna — fast (default)",high:"GPT-5.6 Terra — highest quality"};
-  content.innerHTML = `<div class="panel"><h2>Zoom authorization</h2><p>${zoomAuth.token_present ? "Authorization token saved. Refresh channels to verify access." : "Zoom authorization is required."}</p><p class="muted">Registered callback must match: ${esc(zoomAuth.redirect_uri)}</p><a class="primary" href="${esc(zoomAuth.start_url)}">${zoomAuth.token_present ? "Reconnect Zoom" : "Authorize Zoom"}</a></div>
+  content.innerHTML = `<div class="panel"><h2>Zoom authorization</h2><p>${!zoomAuth.token_present ? "Zoom authorization is required." : zoomAuth.auth_error ? `Authorization expired: ${esc(zoomAuth.auth_error.reason)} Reconnect Zoom to resume syncing.` : "Authorization token saved. Refresh channels to verify access."}</p><p class="muted">Registered callback must match: ${esc(zoomAuth.redirect_uri)}</p><a class="primary" href="${esc(zoomAuth.start_url)}">${zoomAuth.token_present ? "Reconnect Zoom" : "Authorize Zoom"}</a></div>
     <div class="panel"><h2>AI model</h2><p class="muted">The API key remains in the external configuration file and is never shown here. Knowledge is always stored in the original conversation language; this language preference is used for query/display behavior.</p>
     <div class="field"><label>Model tier</label><select id="modelTier">${Object.entries(ai.model_tiers).map(([tier,model])=>`<option value="${tier}" ${tier===ai.model_tier?"selected":""}>${esc(tierLabels[tier]||tier)} · ${esc(model)}</option>`).join("")}</select></div>
     <div class="field"><label>Preferred query language</label><select id="outputLanguage">${ai.output_languages.map(language=>`<option value="${language}" ${language===ai.output_language?"selected":""}>${esc(languageLabels[language]||language)}</option>`).join("")}</select></div>
@@ -186,10 +196,10 @@ async function settings() {
   document.querySelector("#saveIdentity").onclick=event=>work(event.target,async()=>{await api("/api/settings/identity",{method:"PUT",body:JSON.stringify({member_id:document.querySelector("#memberId").value,display_name:document.querySelector("#displayName").value})});show("Identity settings saved");});
 }
 
-async function work(button, fn, progress = null) { const original=button.textContent;button.disabled=true;if(progress){button.textContent=progress.label;startProgress(progress.title,progress.detail);}try{await fn();}catch(error){show(error.message,true);}finally{if(progress)stopProgress();button.textContent=original;button.disabled=false;} }
+async function work(button, fn, progress = null) { const original=button.textContent;button.disabled=true;if(progress){button.textContent=progress.label;startProgress(progress.title,progress.detail);}try{await fn();}catch(error){show(error.message,true);refreshAuthBanner();}finally{if(progress)stopProgress();button.textContent=original;button.disabled=false;} }
 cancelInternalNote.onclick=closeInternalNote;
 internalNoteDialog.addEventListener("cancel",()=>{internalNoteTopicId=null;internalNoteText.value="";internalNoteError.textContent="";internalNoteError.classList.add("hidden");});
 saveInternalNote.onclick=async()=>{const note=internalNoteText.value.trim();if(!note){internalNoteError.textContent="Enter an internal note before saving.";internalNoteError.classList.remove("hidden");internalNoteText.focus();return;}const topicId=internalNoteTopicId;saveInternalNote.disabled=true;cancelInternalNote.disabled=true;saveInternalNote.textContent="Summarizing…";internalNoteError.classList.add("hidden");try{await api(`/api/topics/${topicId}/internal-notes`,{method:"POST",body:JSON.stringify({note})});closeInternalNote();show("Internal note saved and merged into the non-Zoom summary.");await topics();}catch(error){internalNoteError.textContent=error.message;internalNoteError.classList.remove("hidden");}finally{saveInternalNote.textContent="Summarize & Save";saveInternalNote.disabled=false;cancelInternalNote.disabled=false;}};
 document.querySelectorAll("nav button").forEach(button=>button.onclick=()=>render(button.dataset.view));
-syncButton.onclick=event=>work(event.target,async()=>{const result=await api("/api/sync-runs",{method:"POST"});const extraction=result.topic_extraction||{};const archive=result.knowledge_archive||{};show(`Sync complete: ${result.channels} channels checked, ${result.messages} new or changed messages${result.errors.length?`, ${result.errors.length} errors`:""}. Recent topics: ${extraction.topics||0} created. Mature topics archived: ${archive.archived_topics||0}.`);await render();},{label:"Syncing…",title:"Syncing channels, extracting topics, and archiving knowledge",detail:"Fetching new Zoom Chat messages, extracting recent conversation topics, and moving eligible completed discussions into the Knowledge Base."});
+syncButton.onclick=event=>work(event.target,async()=>{const result=await api("/api/sync-runs",{method:"POST"});if(result.auth_required){await render();show("Sync stopped: Zoom authorization has expired. Use Reconnect Zoom above, then sync again.",true);return;}const extraction=result.topic_extraction||{};const archive=result.knowledge_archive||{};show(`Sync complete: ${result.channels} channels checked, ${result.messages} new or changed messages${result.errors.length?`, ${result.errors.length} errors`:""}. Recent topics: ${extraction.topics||0} created. Mature topics archived: ${archive.archived_topics||0}.`);await render();},{label:"Syncing…",title:"Syncing channels, extracting topics, and archiving knowledge",detail:"Fetching new Zoom Chat messages, extracting recent conversation topics, and moving eligible completed discussions into the Knowledge Base."});
 render();

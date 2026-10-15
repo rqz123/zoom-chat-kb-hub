@@ -5,7 +5,7 @@ from datetime import datetime, timedelta, timezone
 from typing import Any, Iterable
 
 from .db import Database
-from .zoom_client import ZoomAPIError, ZoomClient
+from .zoom_client import ZoomAPIError, ZoomAuthError, ZoomClient
 
 
 ENCRYPTED_PLACEHOLDER = "[This is an encrypted message]"
@@ -85,6 +85,9 @@ class SyncService:
             try:
                 sample = list(self.client.iter_messages(row["id"], start, end, max_pages=1))[:20]
                 status, reason = classify_messages(sample)
+            except ZoomAuthError:
+                # Not a property of the channel; keep its last known readability.
+                raise
             except ZoomAPIError as error:
                 status, reason = classify_error(error)
             with self.db.connect() as connection:
@@ -116,6 +119,7 @@ class SyncService:
             ).fetchall()
 
         total_messages = 0
+        auth_required = False
         errors: list[dict[str, str]] = []
         channel_results: list[dict[str, Any]] = []
         for channel in channels:
@@ -174,10 +178,14 @@ class SyncService:
                            ON CONFLICT(channel_id) DO UPDATE SET last_sync_at=excluded.last_sync_at,last_error=excluded.last_error""",
                         (channel["id"], now_iso(), str(error)),
                     )
+                if isinstance(error, ZoomAuthError):
+                    # Every remaining channel would fail the same way.
+                    auth_required = True
+                    break
 
         status = "completed" if not errors else "partial"
         finished_at = now_iso()
-        detail = {"channels": channel_results, "errors": errors}
+        detail = {"channels": channel_results, "errors": errors, "auth_required": auth_required}
         with self.db.connect() as connection:
             connection.execute(
                 """UPDATE sync_runs SET finished_at=?,status=?,channel_count=?,message_count=?,error_count=?,detail=?
@@ -191,6 +199,7 @@ class SyncService:
             "messages": total_messages,
             "channel_results": channel_results,
             "errors": errors,
+            "auth_required": auth_required,
         }
 
     def backfill_channel(self, channel_id: str, days: int) -> dict[str, Any]:

@@ -18,6 +18,13 @@ class ZoomAPIError(RuntimeError):
         self.code = code
 
 
+class ZoomAuthError(ZoomAPIError):
+    """The saved Zoom authorization no longer works and must be renewed in the browser."""
+
+
+REAUTHORIZE_MESSAGE = "Zoom authorization has expired. Reconnect Zoom, then sync again."
+
+
 def rfc3339_seconds(value: datetime) -> str:
     if value.tzinfo is None:
         value = value.replace(tzinfo=timezone.utc)
@@ -33,7 +40,8 @@ class ZoomClient:
         tokens = self.token_store.load()
         refresh_token = tokens.get("refresh_token")
         if not refresh_token:
-            raise ZoomAPIError(401, "Zoom authorization must be renewed.")
+            self.token_store.mark_invalid("No refresh token is saved.")
+            raise ZoomAuthError(401, REAUTHORIZE_MESSAGE)
         body = urllib.parse.urlencode({
             "grant_type": "refresh_token",
             "refresh_token": refresh_token,
@@ -45,7 +53,14 @@ class ZoomClient:
             with urllib.request.urlopen(request, timeout=30) as response:
                 refreshed = json.load(response)
         except urllib.error.HTTPError as exc:
+            if exc.code in (400, 401):
+                # invalid_grant: the refresh token was revoked or replaced, e.g. by
+                # authorizing the same Zoom account on another computer.
+                self.token_store.mark_invalid(f"Zoom rejected the refresh token (HTTP {exc.code}).")
+                raise ZoomAuthError(exc.code, REAUTHORIZE_MESSAGE) from exc
             raise ZoomAPIError(exc.code, "Zoom token refresh failed.") from exc
+        except urllib.error.URLError as exc:
+            raise ZoomAPIError(503, "Could not reach Zoom to refresh authorization.") from exc
         if "refresh_token" not in refreshed:
             refreshed["refresh_token"] = refresh_token
         self.token_store.save(refreshed)
@@ -66,6 +81,9 @@ class ZoomClient:
             if exc.code == 401 and retry:
                 self._refresh()
                 return self.request_json(path, params, retry=False)
+            if exc.code == 401:
+                self.token_store.mark_invalid("Zoom rejected a freshly refreshed access token.")
+                raise ZoomAuthError(401, REAUTHORIZE_MESSAGE) from exc
             try:
                 detail = json.loads(exc.read().decode("utf-8", "replace"))
             except (ValueError, OSError):

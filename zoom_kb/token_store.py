@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
@@ -11,6 +12,9 @@ class TokenStore:
     def __init__(self, protected_path: Path, legacy_path: Path | None = None):
         self.protected_path = protected_path
         self.legacy_path = legacy_path
+        # Kept beside the token, not in the database: the token belongs to this
+        # computer, while the database moves between computers during handoff.
+        self.auth_error_path = protected_path.with_name("zoom-auth-error.json")
 
     def import_legacy_if_needed(self) -> bool:
         if self.protected_path.exists() or not self.legacy_path or not self.legacy_path.exists():
@@ -49,4 +53,17 @@ class TokenStore:
         temporary = self.protected_path.with_suffix(".tmp")
         temporary.write_bytes(protect(encoded))
         temporary.replace(self.protected_path)
+        self.auth_error_path.unlink(missing_ok=True)
+
+    def mark_invalid(self, reason: str) -> None:
+        payload = {"reason": reason, "failed_at": datetime.now(timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z")}
+        self.auth_error_path.parent.mkdir(parents=True, exist_ok=True)
+        self.auth_error_path.write_text(json.dumps(payload), encoding="utf-8")
+
+    def auth_error(self) -> dict[str, Any] | None:
+        try:
+            payload = json.loads(self.auth_error_path.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            return None
+        return payload if isinstance(payload, dict) else None
 

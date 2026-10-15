@@ -123,7 +123,7 @@ def oauth_router(tokens: TokenStore, client_id: str) -> APIRouter:
 
     @router.get("/api/auth/zoom")
     def status():
-        return {"token_present": tokens.exists(), "client_id": client_id,
+        return {"token_present": tokens.exists(), "auth_error": tokens.auth_error(), "client_id": client_id,
                 "redirect_uri": redirect_uri, "start_url": f"http://{parsed.netloc}/oauth/zoom/start"}
 
     @router.get("/oauth/zoom/start", include_in_schema=False)

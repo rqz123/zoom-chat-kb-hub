@@ -18,6 +18,7 @@ class OAuthTests(unittest.TestCase):
     def setUp(self):
         self.store = Mock()
         self.store.exists.return_value = False
+        self.store.auth_error.return_value = None
         self.flow = ZoomOAuth(self.store, "test-client", "http://localhost:8765/oauth/zoom/callback")
 
     def test_pkce_browser_binding_and_replay(self):
