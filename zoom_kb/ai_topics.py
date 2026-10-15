@@ -662,7 +662,11 @@ class TopicAIService:
                     [(topic_id, item["local_id"]) for item in source_rows],
                 )
                 self._merge_source_overlaps(connection, int(topic_id), window["channel_id"])
-                stored_ids.append(int(topic_id))
+                superseded = connection.execute(
+                    "SELECT superseded_by_id FROM conversation_topics WHERE id=?", (topic_id,)
+                ).fetchone()["superseded_by_id"]
+                if not superseded:
+                    stored_ids.append(int(topic_id))
         return stored_ids
 
     @staticmethod
@@ -779,6 +783,32 @@ class TopicAIService:
                 and len(shared_features) >= 2
                 and topic_similarity >= 0.12
             )
+            # The reverse case: every source of the new topic already belongs to an
+            # older topic. Fold the new topic into that more complete one so it keeps
+            # its summary, Keep Tracking state and notes; nothing is left to merge.
+            # A merge keeps "Do not track" from either side, so never let a new topic
+            # that inherited it from an ignored overlap hide a topic still in use.
+            new_ignored = connection.execute(
+                "SELECT ignored_at FROM conversation_topics WHERE id=?", (topic_id,)
+            ).fetchone()["ignored_at"]
+            absorbed = (
+                not should_merge
+                and not (new_ignored and not candidate["ignored_at"])
+                and bool(new_sources)
+                and new_sources.issubset(old_sources)
+                and len(shared_features) >= 2
+                and topic_similarity >= 0.12
+            )
+            if absorbed:
+                cls._merge_topics(
+                    connection,
+                    topic_id,
+                    int(candidate["id"]),
+                    "source_overlap",
+                    1.0,
+                    "New topic's source messages were contained in an existing topic.",
+                )
+                return merged + 1
             if should_merge:
                 cls._merge_topics(
                     connection,

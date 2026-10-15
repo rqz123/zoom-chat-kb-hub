@@ -106,6 +106,39 @@ class TopicMergingTests(unittest.TestCase):
         self.assertEqual(event["method"], "source_overlap")
         self.assertAlmostEqual(event["confidence"], 0.75)
 
+    def test_new_topic_contained_in_older_topic_is_folded_into_it(self):
+        old_id = self._topic("Portrait support", "ONboard portrait mode", range(0, 8), keep_tracking=1)
+        new_id = self._topic("Portrait support follow-up", "ONboard portrait mode", range(5, 8))
+        with self.db.connect() as connection:
+            merged = TopicAIService._merge_source_overlaps(connection, new_id, "c1")
+            old = connection.execute(
+                "SELECT superseded_by_id,keep_tracking,source_message_count FROM conversation_topics WHERE id=?",
+                (old_id,),
+            ).fetchone()
+            new = connection.execute(
+                "SELECT superseded_by_id FROM conversation_topics WHERE id=?", (new_id,)
+            ).fetchone()
+        self.assertEqual(merged, 1)
+        self.assertEqual(new["superseded_by_id"], old_id)
+        self.assertIsNone(old["superseded_by_id"])
+        self.assertEqual(old["keep_tracking"], 1)
+        self.assertEqual(old["source_message_count"], 8)
+
+    def test_inherited_do_not_track_never_hides_a_tracked_topic(self):
+        tracked_id = self._topic("Portrait support", "ONboard portrait mode", range(0, 8), keep_tracking=1)
+        ignored_id = self._topic("Portrait duplicate", "ONboard portrait mode", range(5, 8))
+        new_id = self._topic("Portrait latest", "ONboard portrait mode", range(5, 8))
+        with self.db.connect() as connection:
+            connection.execute("UPDATE conversation_topics SET ignored_at='2026-10-01T00:00:00Z' WHERE id=?", (ignored_id,))
+            TopicAIService._merge_source_overlaps(connection, new_id, "c1")
+            tracked = connection.execute(
+                "SELECT superseded_by_id,keep_tracking,ignored_at FROM conversation_topics WHERE id=?",
+                (tracked_id,),
+            ).fetchone()
+        self.assertIsNone(tracked["superseded_by_id"])
+        self.assertEqual(tracked["keep_tracking"], 1)
+        self.assertIsNone(tracked["ignored_at"])
+
     def test_high_source_overlap_does_not_merge_different_subjects(self):
         old_id = self._topic("Quarterly pricing review", "Update reseller pricing", range(0, 7))
         new_id = self._topic("Camera firmware crash", "Camera reboots during calls", range(1, 8))
