@@ -783,19 +783,19 @@ class TopicAIService:
                 and len(shared_features) >= 2
                 and topic_similarity >= 0.12
             )
-            # The reverse case: every source of the new topic already belongs to an
-            # older topic. Fold the new topic into that more complete one so it keeps
-            # its summary, Keep Tracking state and notes; nothing is left to merge.
+            # When the new topic's sources are a strict subset of an older topic, the
+            # new one adds nothing, so fold it into the older, more complete topic
+            # (keeping its summary, Keep Tracking state and notes). This wins over the
+            # newer-wins merge below even when the overlap is high enough for both.
             # A merge keeps "Do not track" from either side, so never let a new topic
             # that inherited it from an ignored overlap hide a topic still in use.
             new_ignored = connection.execute(
                 "SELECT ignored_at FROM conversation_topics WHERE id=?", (topic_id,)
             ).fetchone()["ignored_at"]
             absorbed = (
-                not should_merge
-                and not (new_ignored and not candidate["ignored_at"])
+                not (new_ignored and not candidate["ignored_at"])
                 and bool(new_sources)
-                and new_sources.issubset(old_sources)
+                and new_sources < old_sources
                 and len(shared_features) >= 2
                 and topic_similarity >= 0.12
             )
@@ -924,6 +924,31 @@ class TopicAIService:
                 decision.reason,
             )
         return True
+
+    def merge_manually(self, source_topic_id: int, target_topic_id: int) -> None:
+        """Fold one topic into another chosen by the user. Raises LookupError or ValueError."""
+        if source_topic_id == target_topic_id:
+            raise ValueError("A topic cannot be merged into itself.")
+        with self.db.connect() as connection:
+            rows = {
+                int(row["id"]): row
+                for row in connection.execute(
+                    "SELECT id,channel_id,superseded_by_id,ignored_at FROM conversation_topics WHERE id IN (?,?)",
+                    (source_topic_id, target_topic_id),
+                )
+            }
+            if len(rows) != 2:
+                raise LookupError("Topic not found.")
+            source, target = rows[source_topic_id], rows[target_topic_id]
+            if source["superseded_by_id"] or target["superseded_by_id"]:
+                raise ValueError("One of these topics was already merged. Refresh the page and try again.")
+            if source["ignored_at"] or target["ignored_at"]:
+                raise ValueError("Topics marked Do not track cannot be merged.")
+            if source["channel_id"] != target["channel_id"]:
+                raise ValueError("Only topics from the same channel can be merged.")
+            self._merge_topics(
+                connection, source_topic_id, target_topic_id, "manual", 1.0, "Merged by the user.",
+            )
 
     def consolidate_topic(self, topic_id: int) -> dict[str, int]:
         settings = self._resolved_settings()

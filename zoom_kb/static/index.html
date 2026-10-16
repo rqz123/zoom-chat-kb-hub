@@ -4,7 +4,7 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>Zoom Chat Knowledge Hub</title>
-  <link rel="stylesheet" href="/static/styles.css?v=0.2.5">
+  <link rel="stylesheet" href="/static/styles.css?v=0.2.7">
 </head>
 <body>
   <aside>
@@ -20,7 +20,7 @@
     <div class="local-note">Local, read-only Zoom access<br>Data stays on this computer</div>
   </aside>
   <main>
-    <header><div><h1 id="title">Overview</h1><p id="subtitle">Zoom Chat sync status and local coverage</p></div><button class="primary" id="syncButton">Sync Selected Channels</button></header>
+    <header><div><h1 id="title">Overview</h1><p id="subtitle">Zoom Chat sync status and local coverage</p></div><div class="actions"><span id="headerActions" class="actions"></span><button class="primary" id="syncButton">Sync Selected Channels</button></div></header>
     <div id="authBanner" class="notice error auth-banner hidden" role="alert"></div>
     <div id="notice" class="notice hidden"></div>
     <div id="progressStatus" class="progress-status hidden" role="status" aria-live="polite">
@@ -44,7 +44,21 @@
       </div>
     </div>
   </dialog>
-  <script src="/static/app.js?v=0.2.5"></script>
+  <dialog id="mergeDialog" aria-labelledby="mergeTitle">
+    <div class="note-dialog">
+      <h2 id="mergeTitle">Merge Topic</h2>
+      <p id="mergeSource" class="note-dialog-topic"></p>
+      <p class="muted">Choose the topic to keep. This topic's messages and internal notes move into it, and this topic is hidden. A database backup is saved first; the merge cannot be undone in the app.</p>
+      <input id="mergeFilter" class="merge-filter" placeholder="Filter by title" aria-label="Filter topics by title">
+      <div id="mergeCandidates" class="merge-list" role="radiogroup" aria-label="Topic to keep"></div>
+      <p id="mergeError" class="dialog-error hidden" role="alert"></p>
+      <div class="dialog-actions">
+        <button class="secondary" id="cancelMerge" type="button">Cancel</button>
+        <button class="primary" id="confirmMerge" type="button" disabled>Merge</button>
+      </div>
+    </div>
+  </dialog>
+  <script src="/static/app.js?v=0.2.7"></script>
 </body>
 </html>
 

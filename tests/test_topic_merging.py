@@ -223,5 +223,56 @@ class TopicMergingTests(unittest.TestCase):
         self.assertEqual([(row["topic_id"], row["note_text"]) for row in notes], [(new_id, "Raw private note")])
 
 
+    def test_manual_merge_keeps_tracking_and_records_the_merge(self):
+        kept_id = self._topic("Mercer display stuck on logo", "Display stuck on DTEN logo", range(0, 4), keep_tracking=1)
+        duplicate_id = self._topic("Mercer 显示器卡在标志", "显示器卡在 DTEN 标志", range(4, 6))
+        TopicAIService(self.db).merge_manually(duplicate_id, kept_id)
+        with self.db.connect() as connection:
+            duplicate = connection.execute(
+                "SELECT superseded_by_id FROM conversation_topics WHERE id=?", (duplicate_id,)
+            ).fetchone()
+            kept = connection.execute(
+                "SELECT keep_tracking,source_message_count FROM conversation_topics WHERE id=?", (kept_id,)
+            ).fetchone()
+            event = connection.execute(
+                "SELECT method FROM topic_merge_events WHERE source_topic_id=? AND target_topic_id=?",
+                (duplicate_id, kept_id),
+            ).fetchone()
+        self.assertEqual(duplicate["superseded_by_id"], kept_id)
+        self.assertEqual(kept["keep_tracking"], 1)
+        self.assertEqual(kept["source_message_count"], 6)
+        self.assertEqual(event["method"], "manual")
+
+    def test_manual_merge_rejects_invalid_pairs(self):
+        first_id = self._topic("First", "Problem", [0])
+        second_id = self._topic("Second", "Problem", [1])
+        service = TopicAIService(self.db)
+        with self.assertRaises(ValueError):
+            service.merge_manually(first_id, first_id)
+        with self.assertRaises(LookupError):
+            service.merge_manually(first_id, 9999)
+        with self.db.connect() as connection:
+            connection.execute(
+                "INSERT INTO channels(id,name,selected,last_seen_at) VALUES('c2','Other',1,'2026-10-01T00:00:00Z')"
+            )
+            connection.execute("UPDATE conversation_topics SET channel_id='c2' WHERE id=?", (second_id,))
+        with self.assertRaises(ValueError):
+            service.merge_manually(first_id, second_id)
+
+    def test_merge_endpoint_backs_up_database_first(self):
+        from fastapi.testclient import TestClient
+        import zoom_kb.app as app_module
+
+        kept_id = self._topic("Kept", "Problem", range(0, 4))
+        duplicate_id = self._topic("Duplicate", "Problem", range(4, 6))
+        service = TopicAIService(self.db)
+        with patch.object(app_module, "db", self.db),                 patch.object(app_module, "topic_ai_service", service),                 patch.object(app_module, "DB_PATH", self.db.path):
+            response = TestClient(app_module.app).post(
+                f"/api/topics/{duplicate_id}/merge", json={"target_topic_id": kept_id}
+            )
+        self.assertEqual(response.status_code, 200)
+        backup = Path(self.folder.name) / "sync-local-backups" / response.json()["backup"]
+        self.assertTrue(backup.is_file())
+
 if __name__ == "__main__":
     unittest.main()

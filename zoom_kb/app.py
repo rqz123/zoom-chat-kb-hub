@@ -1,7 +1,10 @@
 from __future__ import annotations
 
 import json
+import sqlite3
 from contextlib import asynccontextmanager
+from datetime import datetime, timezone
+from pathlib import Path
 from typing import Any
 
 from fastapi import FastAPI, HTTPException, Query, Request
@@ -101,6 +104,10 @@ class KnowledgeUpdate(BaseModel):
 class TopicAnalyzeRequest(BaseModel):
     channel_ids: list[str] | None = None
     max_windows: int = 8
+
+
+class TopicMergeRequest(BaseModel):
+    target_topic_id: int
 
 
 class TopicReviewUpdate(BaseModel):
@@ -472,6 +479,41 @@ def ignore_topic(topic_id: int) -> dict[str, Any]:
     return {"id": topic_id, "ignored": True}
 
 
+@app.get("/api/topics/{topic_id}/merge-candidates")
+def topic_merge_candidates(topic_id: int) -> list[dict[str, Any]]:
+    with db.connect() as connection:
+        topic = connection.execute(
+            "SELECT channel_id FROM conversation_topics WHERE id=?", (topic_id,)
+        ).fetchone()
+        if not topic:
+            raise HTTPException(404, "Topic not found.")
+        # Same visibility rule as the topic list, limited to the topic's channel.
+        rows = connection.execute(
+            """SELECT t.id,t.title,t.status,t.keep_tracking,t.source_message_count,t.last_message_at,
+                      (SELECT COUNT(*) FROM topic_sources a JOIN topic_sources b ON b.message_id=a.message_id
+                       WHERE a.topic_id=t.id AND b.topic_id=?) shared_message_count
+               FROM conversation_topics t
+               WHERE t.channel_id=? AND t.id<>? AND t.superseded_by_id IS NULL AND t.ignored_at IS NULL
+                 AND (t.keep_tracking=1 OR (t.archived_at IS NULL AND t.last_message_at>?))
+               ORDER BY shared_message_count DESC,t.last_message_at DESC LIMIT 50""",
+            (topic_id, topic["channel_id"], topic_id, knowledge_pipeline.cutoff()),
+        ).fetchall()
+    return [dict(row) for row in rows]
+
+
+@app.post("/api/topics/{topic_id}/merge")
+def merge_topic(topic_id: int, body: TopicMergeRequest) -> dict[str, Any]:
+    # A merge cannot be undone in the app, so keep a restorable copy first.
+    backup_path = _backup_database(f"merge-topic-{topic_id}-into-{body.target_topic_id}")
+    try:
+        topic_ai_service.merge_manually(topic_id, body.target_topic_id)
+    except LookupError as error:
+        raise HTTPException(404, str(error)) from error
+    except ValueError as error:
+        raise HTTPException(400, str(error)) from error
+    return {"id": topic_id, "merged_into": body.target_topic_id, "backup": backup_path.name}
+
+
 @app.patch("/api/topics/{topic_id}/tracking")
 def set_topic_tracking(topic_id: int, body: TopicTrackingUpdate) -> dict[str, Any]:
     with db.connect() as connection:
@@ -765,6 +807,21 @@ def update_knowledge(knowledge_id: int, body: KnowledgeUpdate) -> dict[str, Any]
 def _require_auth() -> None:
     if not tokens.exists():
         raise HTTPException(401, "Zoom authorization token is not available.")
+
+
+def _backup_database(label: str) -> Path:
+    folder = DB_PATH.parent / "sync-local-backups"
+    folder.mkdir(parents=True, exist_ok=True)
+    stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+    destination = folder / f"zoom_kb-before-{label}-{stamp}.db"
+    target = sqlite3.connect(destination)
+    try:
+        with db.connect() as source:
+            source.backup(target)
+        target.execute("PRAGMA journal_mode=DELETE")
+    finally:
+        target.close()
+    return destination
 
 
 def _raise_safe(error: Exception) -> None:

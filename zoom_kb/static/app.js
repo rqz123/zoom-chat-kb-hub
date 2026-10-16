@@ -2,6 +2,7 @@ const state = {view: "dashboard", channels: [], syncSettings: {initial_sync_days
 const content = document.querySelector("#content");
 const notice = document.querySelector("#notice");
 const syncButton = document.querySelector("#syncButton");
+const headerActions = document.querySelector("#headerActions");
 const progressStatus = document.querySelector("#progressStatus");
 const authBanner = document.querySelector("#authBanner");
 const internalNoteDialog = document.querySelector("#internalNoteDialog");
@@ -9,6 +10,12 @@ const internalNoteText = document.querySelector("#internalNoteText");
 const internalNoteError = document.querySelector("#internalNoteError");
 const saveInternalNote = document.querySelector("#saveInternalNote");
 const cancelInternalNote = document.querySelector("#cancelInternalNote");
+const mergeDialog = document.querySelector("#mergeDialog");
+const mergeCandidates = document.querySelector("#mergeCandidates");
+const mergeFilter = document.querySelector("#mergeFilter");
+const mergeError = document.querySelector("#mergeError");
+const confirmMerge = document.querySelector("#confirmMerge");
+let mergeSourceId = null;
 let progressTimer = null;
 let internalNoteTopicId = null;
 const topicLanguageBuffer = new Map();
@@ -58,7 +65,9 @@ async function render(view = state.view) {
   document.querySelectorAll("nav button").forEach(button => button.classList.toggle("active", button.dataset.view === view));
   document.querySelector("#title").textContent = meta[view][0];
   document.querySelector("#subtitle").textContent = meta[view][1];
-  syncButton.hidden = view === "settings";
+  // Channel selection has its own header actions; syncing belongs to the other views.
+  syncButton.hidden = view === "settings" || view === "channels";
+  headerActions.innerHTML = "";
   content.innerHTML = "<div class='panel empty'>Loading…</div>";
   refreshAuthBanner();
   try { await ({dashboard, channels, topics, knowledge, mentions, settings}[view])(); }
@@ -99,7 +108,8 @@ async function channels() {
   const days = state.syncSettings.initial_sync_days;
   content.innerHTML = `<div class="panel"><div class="panel-head"><div><h2>Initial sync range for new channels</h2><p class="muted">Only affects channels that have not completed their first sync. Existing data is never deleted or automatically backfilled.</p></div>
     <select id="initialSyncDays">${state.syncSettings.allowed_days.map(day=>`<option value="${day}" ${day===days?"selected":""}>${day} days${day===90?" (default)":""}</option>`).join("")}</select></div>
-    <div class="toolbar"><input id="channelSearch" placeholder="Search channels"><div class="actions"><button class="secondary" id="refreshChannels">Refresh from Zoom</button><button class="secondary" id="probeSelected">Test Selected Channels</button></div></div><div id="channelTable"></div></div>`;
+    <div class="toolbar"><input id="channelSearch" placeholder="Search channels"></div><div id="channelTable"></div></div>`;
+  headerActions.innerHTML = `<button class="primary" id="refreshChannels" title="Reload the channel list from Zoom">Refresh from Zoom</button><button class="success" id="probeSelected" title="Check whether message text is readable in the selected channels">Test Selected Channels</button>`;
   drawChannels();
   document.querySelector("#channelSearch").oninput = drawChannels;
   document.querySelector("#initialSyncDays").onchange = async event => { const days=Number(event.target.value);await api("/api/settings/sync",{method:"PUT",body:JSON.stringify({days})});state.syncSettings.initial_sync_days=days;drawChannels();show(`Initial sync range set to ${days} days. Existing data was not changed.`); };
@@ -136,7 +146,7 @@ function topicRows(rows) {
     <h2>${esc(topic.title)}</h2><p><b>Problem:</b> ${esc(topic.problem_summary||"—")}</p><p><b>Discussion:</b> ${esc(topic.discussion_summary||"—")}</p>
     <div data-topic-conclusions>${topicListBlock("Conclusions:",topic.conclusions)}</div><div data-topic-questions>${topicListBlock("Open questions:",topic.open_questions)}</div>
     ${internalContextBlock(topic)}
-    <div class="actions topic-actions"><button class="topic-action topic-detail" data-topic-detail="${topic.id}">View Original Messages (${topic.source_message_count})</button><button class="topic-action topic-language" data-topic-switch-language="${topic.id}" data-current-language="${topicLanguage(topic)}" title="Switch between English and Chinese">Switch Language</button><button class="topic-action topic-search" data-topic-search-kb="${topic.id}">Search KB</button><button class="topic-action topic-note" data-topic-note="${topic.id}" data-topic-title="${esc(topic.title)}">Add Internal Note</button><button class="topic-action topic-keep ${topic.keep_tracking?'active':''}" data-topic-keep="${topic.id}" data-enabled="${topic.keep_tracking?'true':'false'}" aria-pressed="${topic.keep_tracking?'true':'false'}" title="Keep this topic in Conversation Topics after it is archived">${topic.keep_tracking?'Keep Tracking ✓':'Keep Tracking'}</button><button class="topic-action topic-ignore" data-topic-ignore="${topic.id}" ${topic.keep_tracking?'disabled title="Turn off Keep Tracking before using Do not track"':'title="Hide this topic and stop tracking it"'}>Do not track</button></div><div id="topicSearchResults${topic.id}"></div><div id="topicSources${topic.id}"></div></article>`).join("") || "<div class='empty'>No recent topics. Sync messages, then select Extract New Topics.</div>";
+    <div class="actions topic-actions"><button class="topic-action topic-detail" data-topic-detail="${topic.id}">View Original Messages (${topic.source_message_count})</button><button class="topic-action topic-language" data-topic-switch-language="${topic.id}" data-current-language="${topicLanguage(topic)}" title="Switch between English and Chinese">Switch Language</button><button class="topic-action topic-search" data-topic-search-kb="${topic.id}">Search KB</button><button class="topic-action topic-note" data-topic-note="${topic.id}" data-topic-title="${esc(topic.title)}">Add Internal Note</button><button class="topic-action topic-merge" data-topic-merge="${topic.id}" data-topic-title="${esc(topic.title)}" title="Fold this duplicate into another topic">Merge into…</button><button class="topic-action topic-keep ${topic.keep_tracking?'active':''}" data-topic-keep="${topic.id}" data-enabled="${topic.keep_tracking?'true':'false'}" aria-pressed="${topic.keep_tracking?'true':'false'}" title="Keep this topic in Conversation Topics after it is archived">${topic.keep_tracking?'Keep Tracking ✓':'Keep Tracking'}</button><button class="topic-action topic-ignore" data-topic-ignore="${topic.id}" ${topic.keep_tracking?'disabled title="Turn off Keep Tracking before using Do not track"':'title="Hide this topic and stop tracking it"'}>Do not track</button></div><div id="topicSearchResults${topic.id}"></div><div id="topicSources${topic.id}"></div></article>`).join("") || "<div class='empty'>No recent topics. Sync messages, then select Extract New Topics.</div>";
 }
 function topicLanguage(topic){return topic.source_language==="chinese"||(/[\u4e00-\u9fff]/.test(`${topic.title} ${topic.problem_summary}`)&&topic.source_language!=="english")?"chinese":"english";}
 function topicListBlock(label,items){return items?.length?`<div><b>${label}</b><ul>${items.map(item=>`<li>${esc(item)}</li>`).join("")}</ul></div>`:"";}
@@ -147,6 +157,7 @@ function internalNoteHistory(rows){return rows?.length?`<div class="internal-not
 function bindTopics() {
   document.querySelectorAll("[data-topic-switch-language]").forEach(button=>button.onclick=event=>work(event.target,async()=>{const id=button.dataset.topicSwitchLanguage;const target=button.dataset.currentLanguage==="chinese"?"english":"chinese";const key=`${id}:${target}`;let translated=topicLanguageBuffer.get(key);let cached=true;if(!translated){const result=await api(`/api/topics/${id}/translate`,{method:"POST",body:JSON.stringify({target_language:target})});translated=result.translation;cached=result.cached;topicLanguageBuffer.set(key,translated);}applyTopicLanguage(button.closest(".topic-card"),translated,target);show(`Showing ${target==="chinese"?"Chinese":"English"}${cached?" (cached)":""}. Original Zoom messages are unchanged.`);},{label:"Translating…",title:"Translating conversation topic",detail:"Translating the topic summary while keeping original Zoom messages unchanged."}));
   document.querySelectorAll("[data-topic-search-kb]").forEach(button=>button.onclick=event=>work(event.target,async()=>{const id=button.dataset.topicSearchKb;const target=document.querySelector(`#topicSearchResults${id}`);const rows=await api(`/api/topics/${id}/search-knowledge`);target.innerHTML=`<div class="search-results"><h3>Related knowledge</h3>${knowledgeMatches(rows)}</div>`;bindKnowledge();},{label:"Searching…",title:"Searching the Knowledge Base",detail:"Translating the query when needed and matching it against knowledge stored in its original language."}));
+  document.querySelectorAll("[data-topic-merge]").forEach(button=>button.onclick=event=>work(event.target,()=>openMerge(button.dataset.topicMerge,button.dataset.topicTitle)));
   document.querySelectorAll("[data-topic-note]").forEach(button=>button.onclick=()=>openInternalNote(button.dataset.topicNote,button.dataset.topicTitle));
   document.querySelectorAll("[data-topic-keep]").forEach(button=>button.onclick=event=>work(event.target,async()=>{const enabled=button.dataset.enabled==="true";if(enabled&&!confirm("Turn off Keep Tracking? This topic will follow the normal archive visibility period."))return;await api(`/api/topics/${button.dataset.topicKeep}/tracking`,{method:"PATCH",body:JSON.stringify({enabled:!enabled})});show(enabled?"Keep Tracking turned off":"Topic will remain in Conversation Topics after archiving");await topics();}));
   document.querySelectorAll("[data-topic-ignore]").forEach(button=>button.onclick=event=>work(event.target,async()=>{if(!confirm("Stop tracking this topic? It will stay hidden when matching messages are analyzed again."))return;await api(`/api/topics/${button.dataset.topicIgnore}/ignore`,{method:"POST"});show("Topic will no longer be tracked");await topics();}));
@@ -154,6 +165,25 @@ function bindTopics() {
 }
 
 function openInternalNote(topicId,topicTitle){internalNoteTopicId=topicId;document.querySelector("#internalNoteTopic").textContent=topicTitle;internalNoteText.value="";internalNoteError.textContent="";internalNoteError.classList.add("hidden");internalNoteDialog.showModal();setTimeout(()=>internalNoteText.focus(),0);}
+async function openMerge(topicId,topicTitle){
+  const rows=await api(`/api/topics/${topicId}/merge-candidates`);
+  mergeSourceId=topicId;
+  document.querySelector("#mergeSource").textContent=topicTitle;
+  mergeFilter.value="";mergeError.textContent="";mergeError.classList.add("hidden");confirmMerge.disabled=true;
+  mergeCandidates.innerHTML=rows.map(row=>`<label class="merge-option" data-title="${esc(row.title.toLowerCase())}"><input type="radio" name="mergeTarget" value="${row.id}"><span><b>${esc(row.title)}</b>${row.keep_tracking?' <span class="badge kept-badge">Kept</span>':''}<small>${row.shared_message_count} shared of ${row.source_message_count} messages · last message ${esc(fmtDate(row.last_message_at))}</small></span></label>`).join("")||"<div class='empty'>No other topics in this channel.</div>";
+  mergeDialog.showModal();setTimeout(()=>mergeFilter.focus(),0);
+}
+mergeFilter.oninput=()=>{const query=mergeFilter.value.trim().toLowerCase();mergeCandidates.querySelectorAll(".merge-option").forEach(option=>option.hidden=!!query&&!option.dataset.title.includes(query));};
+mergeCandidates.onchange=()=>{confirmMerge.disabled=!mergeCandidates.querySelector("input:checked");};
+document.querySelector("#cancelMerge").onclick=()=>mergeDialog.close();
+confirmMerge.onclick=async()=>{
+  const selected=mergeCandidates.querySelector("input:checked");if(!selected)return;
+  const targetTitle=selected.closest(".merge-option").querySelector("b").textContent;
+  if(!confirm(`Merge into "${targetTitle}"? This topic will be hidden. This cannot be undone in the app.`))return;
+  confirmMerge.disabled=true;
+  try{await api(`/api/topics/${mergeSourceId}/merge`,{method:"POST",body:JSON.stringify({target_topic_id:Number(selected.value)})});mergeDialog.close();show(`Merged into "${targetTitle}".`);await topics();}
+  catch(error){mergeError.textContent=error.message;mergeError.classList.remove("hidden");confirmMerge.disabled=false;}
+};
 function closeInternalNote(){internalNoteDialog.close();internalNoteTopicId=null;internalNoteText.value="";internalNoteError.textContent="";internalNoteError.classList.add("hidden");}
 
 async function knowledge() {
