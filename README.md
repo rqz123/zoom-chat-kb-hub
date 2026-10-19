@@ -49,7 +49,7 @@ After authorization, refresh channels to verify the token has the required Team 
 ## Run as a local service
 
 ```powershell
-.\start.ps1
+.\start.cmd
 ```
 
 The command starts the application in the background and waits for its health check.
@@ -58,8 +58,11 @@ Open <http://127.0.0.1:8765>. Standard output and errors are written under `data
 Stop the service with:
 
 ```powershell
-.\stop.ps1
+.\stop.cmd
 ```
+
+The `.cmd` wrappers run the matching `.ps1` script with `-ExecutionPolicy Bypass`, so they
+work even where Windows blocks running PowerShell scripts directly.
 
 Running `start.ps1` again is safe: it reports the existing service instead of starting
 a duplicate. `stop.ps1` validates the recorded process start time before stopping it,
