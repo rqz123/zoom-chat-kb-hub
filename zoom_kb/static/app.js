@@ -205,9 +205,13 @@ function bindKnowledge() {
 }
 
 async function mentions() {
-  const rows = await api("/api/mentions");
-  content.innerHTML = `<div class="panel"><table><thead><tr><th>Source</th><th>Original message</th><th>Status</th></tr></thead><tbody>${rows.map(item=>`<tr><td>${esc(item.channel_name)}<br><span class="muted">${esc(item.sender_name)} · ${esc(fmtDate(item.sent_at))}</span></td><td class="body">${esc(item.body)}</td><td><select data-mention="${item.message_id}">${["new","in_progress","done","ignored"].map(status=>`<option ${status===item.status?"selected":""}>${status}</option>`).join("")}</select></td></tr>`).join("") || "<tr><td colspan='3' class='empty'>No mentions found</td></tr>"}</tbody></table></div>`;
-  document.querySelectorAll("[data-mention]").forEach(select=>select.onchange=()=>api(`/api/mentions/${select.dataset.mention}`,{method:"PATCH",body:JSON.stringify({status:select.value})}));
+  const view = state.mentionView || "open";
+  const rows = await api(`/api/mentions?view=${view}`);
+  const empty = view === "open" ? "No open mentions. Nice work." : "No handled mentions yet.";
+  content.innerHTML = `<div class="view-tabs"><button class="secondary ${view==="open"?"active":""}" data-mention-view="open" title="New and in progress">Open</button><button class="secondary ${view==="handled"?"active":""}" data-mention-view="handled" title="Done and ignored">Handled</button></div><div class="panel"><table><thead><tr><th>Source</th><th>Original message</th><th>Status</th></tr></thead><tbody>${rows.map(item=>`<tr><td>${esc(item.channel_name)}<br><span class="muted">${esc(item.sender_name)} · ${esc(fmtDate(item.sent_at))}</span></td><td class="body">${esc(item.body)}</td><td><select data-mention="${item.message_id}">${["new","in_progress","done","ignored"].map(status=>`<option ${status===item.status?"selected":""}>${status}</option>`).join("")}</select></td></tr>`).join("") || `<tr><td colspan='3' class='empty'>${empty}</td></tr>`}</tbody></table></div>`;
+  document.querySelectorAll("[data-mention-view]").forEach(button=>button.onclick=()=>{state.mentionView=button.dataset.mentionView;mentions();});
+  // Rows stay put until the next visit or refresh, which then lists them under the other tab.
+  document.querySelectorAll("[data-mention]").forEach(select=>select.onchange=()=>api(`/api/mentions/${select.dataset.mention}`,{method:"PATCH",body:JSON.stringify({status:select.value})}).catch(error=>show(error.message,true)));
 }
 
 async function settings() {

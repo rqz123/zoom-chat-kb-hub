@@ -180,7 +180,10 @@ def dashboard() -> dict[str, Any]:
         }
         selected = connection.execute("SELECT COUNT(*) count FROM channels WHERE selected=1 AND is_active=1").fetchone()["count"]
         messages = connection.execute("SELECT COUNT(*) count FROM messages").fetchone()["count"]
-        mentions = connection.execute("SELECT COUNT(*) count FROM mention_tasks WHERE status!='done'").fetchone()["count"]
+        mentions = connection.execute(
+            f"SELECT COUNT(*) count FROM mention_tasks WHERE status IN ({','.join('?' * len(OPEN_MENTION_STATUSES))})",
+            OPEN_MENTION_STATUSES,
+        ).fetchone()["count"]
         run = connection.execute("SELECT * FROM sync_runs ORDER BY id DESC LIMIT 1").fetchone()
     last_run = None
     if run:
@@ -598,10 +601,20 @@ def promote_topic(topic_id: int) -> dict[str, Any]:
     return {"knowledge_id": knowledge_id, "topic_id": topic_id, "already_added": False}
 
 
+OPEN_MENTION_STATUSES = ("new", "in_progress")
+HANDLED_MENTION_STATUSES = ("done", "ignored")
+
+
 @app.get("/api/mentions")
-def list_mentions(status: str = "") -> list[dict[str, Any]]:
-    where = "WHERE t.status=?" if status else ""
-    parameters = (status,) if status else ()
+def list_mentions(status: str = "", view: str = "") -> list[dict[str, Any]]:
+    if status:
+        statuses: tuple[str, ...] = (status,)
+    elif view in {"open", "handled"}:
+        statuses = OPEN_MENTION_STATUSES if view == "open" else HANDLED_MENTION_STATUSES
+    else:
+        statuses = ()
+    where = f"WHERE t.status IN ({','.join('?' * len(statuses))})" if statuses else ""
+    parameters = statuses
     with db.connect() as connection:
         rows = connection.execute(
             f"""SELECT m.id message_id,m.body,m.sent_at,m.sender_name,c.name channel_name,
